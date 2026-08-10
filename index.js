@@ -4,6 +4,7 @@ const express = require("express");
 const morgan = require("morgan");
 const authRoutes = require("./routes/AuthRoute");
 const userRoutes = require("./routes/UserRoute");
+const empresaRoutes = require("./routes/EmpresaRoute");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,6 +14,7 @@ app.use(morgan("dev"));
 
 app.use("/api/auth", authRoutes);
 app.use("/api", userRoutes);
+app.use("/api", empresaRoutes);
 
 app.get("/", (req, res) => {
   res.json({
