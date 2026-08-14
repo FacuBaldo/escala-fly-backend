@@ -6,12 +6,43 @@ datasource db {
   provider = "postgresql"
 }
 
+enum Role {
+  ADMIN
+  ENCARGADO
+  PILOTO
+  AGROPECUARIO
+}
+
+model Empresa {
+  id        String   @id @default(uuid())
+  nombre    String
+  email     String?
+  telefono  String?
+  usuarios  User[]
+  campos    Campo[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Campo {
+  id        String   @id @default(uuid())
+  nombre    String
+  ubicacion String?
+  empresaId String
+  empresa   Empresa  @relation(fields: [empresaId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model User {
   id        String   @id @default(uuid())
   firstName String
   lastName  String
   email     String   @unique
   password  String
+  role      Role     @default(AGROPECUARIO)
+  empresaId String?
+  empresa   Empresa? @relation(fields: [empresaId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
