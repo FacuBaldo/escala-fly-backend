@@ -8,9 +8,6 @@ const aeronaveSelect = {
   matricula: true,
   modelo: true,
   fabricante: true,
-  capacidadLitros: true,
-  anchoTrabajoMetros: true,
-  velocidadCrucero: true,
   estado: true,
   observaciones: true,
   createdAt: true,
@@ -19,15 +16,6 @@ const aeronaveSelect = {
 
 const normalizeMatricula = (matricula) => {
   return typeof matricula === "string" ? matricula.trim().toUpperCase() : matricula;
-};
-
-const toNullableFloat = (value) => {
-  if (value === undefined || value === null || value === "") {
-    return null;
-  }
-
-  const parsed = Number(value);
-  return Number.isNaN(parsed) ? null : parsed;
 };
 
 const hasRequiredAeronaveFields = ({ matricula, modelo }) => {
@@ -54,9 +42,6 @@ const buildAeronaveData = (body) => {
     matricula,
     modelo,
     fabricante: fabricante || null,
-    capacidadLitros: toNullableFloat(body.capacidadLitros),
-    anchoTrabajoMetros: toNullableFloat(body.anchoTrabajoMetros),
-    velocidadCrucero: toNullableFloat(body.velocidadCrucero),
     estado: estado || undefined,
     observaciones: observaciones || null
   };
