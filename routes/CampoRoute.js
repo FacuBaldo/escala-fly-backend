@@ -1,13 +1,13 @@
 const express = require("express");
 const CampoController = require("../controllers/CampoController");
-const verifyToken = require("../middlewares/verifyToken");
+const verificarToken = require("../middlewares/verificarToken");
 
 const router = express.Router();
 
-router.post("/campos", verifyToken, CampoController.createCampo);
-router.get("/campos", verifyToken, CampoController.getCampos);
-router.get("/campos/:id", verifyToken, CampoController.getCampoById);
-router.put("/campos/:id", verifyToken, CampoController.updateCampo);
-router.delete("/campos/:id", verifyToken, CampoController.deleteCampo);
+router.post("/campos", verificarToken, CampoController.createCampo);
+router.get("/campos", verificarToken, CampoController.getCampos);
+router.get("/campos/:id", verificarToken, CampoController.getCampoById);
+router.put("/campos/:id", verificarToken, CampoController.updateCampo);
+router.delete("/campos/:id", verificarToken, CampoController.deleteCampo);
 
 module.exports = router;

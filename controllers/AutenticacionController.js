@@ -2,12 +2,14 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../configs/prisma");
 
-const userWithPasswordSelect = {
+const usuarioConContrasenaSelect = {
   id: true,
-  firstName: true,
-  lastName: true,
+  nombre: true,
+  apellido: true,
   email: true,
-  password: true,
+  contrasena: true,
+  rol: true,
+  empresaId: true,
   createdAt: true,
   updatedAt: true
 };
@@ -16,12 +18,12 @@ const normalizeEmail = (email) => {
   return typeof email === "string" ? email.trim().toLowerCase() : email;
 };
 
-const login = async (req, res) => {
+const iniciarSesion = async (req, res) => {
   try {
     const email = normalizeEmail(req.body.email);
-    const { password } = req.body;
+    const { contrasena } = req.body;
 
-    if (!email || !password) {
+    if (!email || !contrasena) {
       return res.status(400).json({ message: "El correo electronico y la contrasena son obligatorios" });
     }
 
@@ -29,32 +31,32 @@ const login = async (req, res) => {
       return res.status(500).json({ message: "La autenticacion no esta configurada correctamente" });
     }
 
-    const user = await prisma.user.findUnique({
+    const usuario = await prisma.usuario.findUnique({
       where: { email },
-      select: userWithPasswordSelect
+      select: usuarioConContrasenaSelect
     });
 
-    if (!user) {
+    if (!usuario) {
       return res.status(401).json({ message: "Correo o contrasena incorrectos" });
     }
 
-    const passwordMatches = await bcrypt.compare(password, user.password);
+    const contrasenaValida = await bcrypt.compare(contrasena, usuario.contrasena);
 
-    if (!passwordMatches) {
+    if (!contrasenaValida) {
       return res.status(401).json({ message: "Correo o contrasena incorrectos" });
     }
 
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { id: usuario.id, email: usuario.email, rol: usuario.rol },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    const { password: _password, ...userWithoutPassword } = user;
+    const { contrasena: _contrasena, ...usuarioSinContrasena } = usuario;
 
     return res.json({
       token,
-      user: userWithoutPassword
+      usuario: usuarioSinContrasena
     });
   } catch (error) {
     return res.status(500).json({ message: "No se pudo iniciar sesion" });
@@ -62,5 +64,5 @@ const login = async (req, res) => {
 };
 
 module.exports = {
-  login
+  iniciarSesion
 };

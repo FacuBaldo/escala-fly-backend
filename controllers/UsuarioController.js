@@ -4,11 +4,13 @@ const prisma = require("../configs/prisma");
 
 const SALT_ROUNDS = 10;
 
-const userSelect = {
+const usuarioSelect = {
   id: true,
-  firstName: true,
-  lastName: true,
+  nombre: true,
+  apellido: true,
   email: true,
+  rol: true,
+  empresaId: true,
   createdAt: true,
   updatedAt: true
 };
@@ -17,8 +19,8 @@ const normalizeEmail = (email) => {
   return typeof email === "string" ? email.trim().toLowerCase() : email;
 };
 
-const hasRequiredUserFields = ({ firstName, lastName, email, password }) => {
-  return Boolean(firstName && lastName && email && password);
+const hasRequiredUsuarioFields = ({ nombre, apellido, email, contrasena }) => {
+  return Boolean(nombre && apellido && email && contrasena);
 };
 
 const isRecordNotFound = (error) => {
@@ -29,28 +31,30 @@ const isUniqueConstraint = (error) => {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 };
 
-const createUser = async (req, res) => {
+const createUsuario = async (req, res) => {
   try {
-    const { firstName, lastName, password } = req.body;
+    const { nombre, apellido, contrasena, rol, empresaId } = req.body;
     const email = normalizeEmail(req.body.email);
 
-    if (!hasRequiredUserFields({ firstName, lastName, email, password })) {
+    if (!hasRequiredUsuarioFields({ nombre, apellido, email, contrasena })) {
       return res.status(400).json({ message: "Todos los campos son obligatorios" });
     }
 
-    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+    const contrasenaHasheada = await bcrypt.hash(contrasena, SALT_ROUNDS);
 
-    const user = await prisma.user.create({
+    const usuario = await prisma.usuario.create({
       data: {
-        firstName,
-        lastName,
+        nombre,
+        apellido,
         email,
-        password: hashedPassword
+        contrasena: contrasenaHasheada,
+        rol,
+        empresaId: empresaId || null
       },
-      select: userSelect
+      select: usuarioSelect
     });
 
-    return res.status(201).json(user);
+    return res.status(201).json(usuario);
   } catch (error) {
     if (isUniqueConstraint(error)) {
       return res.status(409).json({ message: "El correo electronico ya esta registrado" });
@@ -60,59 +64,61 @@ const createUser = async (req, res) => {
   }
 };
 
-const getUsers = async (_req, res) => {
+const getUsuarios = async (_req, res) => {
   try {
-    const users = await prisma.user.findMany({
-      select: userSelect,
+    const usuarios = await prisma.usuario.findMany({
+      select: usuarioSelect,
       orderBy: { createdAt: "desc" }
     });
 
-    return res.json(users);
+    return res.json(usuarios);
   } catch (error) {
     return res.status(500).json({ message: "No se pudieron cargar los usuarios" });
   }
 };
 
-const getUserById = async (req, res) => {
+const getUsuarioById = async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
+    const usuario = await prisma.usuario.findUnique({
       where: { id: req.params.id },
-      select: userSelect
+      select: usuarioSelect
     });
 
-    if (!user) {
+    if (!usuario) {
       return res.status(404).json({ message: "El usuario no existe" });
     }
 
-    return res.json(user);
+    return res.json(usuario);
   } catch (error) {
     return res.status(500).json({ message: "No se pudo cargar el usuario" });
   }
 };
 
-const updateUser = async (req, res) => {
+const updateUsuario = async (req, res) => {
   try {
-    const { firstName, lastName, password } = req.body;
+    const { nombre, apellido, contrasena, rol, empresaId } = req.body;
     const email = normalizeEmail(req.body.email);
 
-    if (!hasRequiredUserFields({ firstName, lastName, email, password })) {
+    if (!hasRequiredUsuarioFields({ nombre, apellido, email, contrasena })) {
       return res.status(400).json({ message: "Todos los campos son obligatorios" });
     }
 
-    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+    const contrasenaHasheada = await bcrypt.hash(contrasena, SALT_ROUNDS);
 
-    const user = await prisma.user.update({
+    const usuario = await prisma.usuario.update({
       where: { id: req.params.id },
       data: {
-        firstName,
-        lastName,
+        nombre,
+        apellido,
         email,
-        password: hashedPassword
+        contrasena: contrasenaHasheada,
+        rol,
+        empresaId: empresaId || null
       },
-      select: userSelect
+      select: usuarioSelect
     });
 
-    return res.json(user);
+    return res.json(usuario);
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "El usuario no existe" });
@@ -126,14 +132,14 @@ const updateUser = async (req, res) => {
   }
 };
 
-const deleteUser = async (req, res) => {
+const deleteUsuario = async (req, res) => {
   try {
-    const user = await prisma.user.delete({
+    const usuario = await prisma.usuario.delete({
       where: { id: req.params.id },
-      select: userSelect
+      select: usuarioSelect
     });
 
-    return res.json(user);
+    return res.json(usuario);
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "El usuario no existe" });
@@ -144,9 +150,9 @@ const deleteUser = async (req, res) => {
 };
 
 module.exports = {
-  createUser,
-  deleteUser,
-  getUserById,
-  getUsers,
-  updateUser
+  createUsuario,
+  deleteUsuario,
+  getUsuarioById,
+  getUsuarios,
+  updateUsuario
 };
