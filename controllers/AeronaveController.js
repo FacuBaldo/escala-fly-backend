@@ -10,6 +10,7 @@ const aeronaveSelect = {
   fabricante: true,
   estado: true,
   observaciones: true,
+  empresaId: true,
   createdAt: true,
   updatedAt: true
 };
@@ -18,8 +19,8 @@ const normalizeMatricula = (matricula) => {
   return typeof matricula === "string" ? matricula.trim().toUpperCase() : matricula;
 };
 
-const hasRequiredAeronaveFields = ({ matricula, modelo }) => {
-  return Boolean(matricula) && Boolean(modelo);
+const hasRequiredAeronaveFields = ({ matricula, modelo, empresaId }) => {
+  return Boolean(matricula) && Boolean(modelo) && Boolean(empresaId);
 };
 
 const isEstadoValido = (estado) => {
@@ -34,8 +35,12 @@ const isUniqueConstraint = (error) => {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 };
 
+const isForeignKeyError = (error) => {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
+};
+
 const buildAeronaveData = (body) => {
-  const { modelo, fabricante, estado, observaciones } = body;
+  const { modelo, fabricante, estado, observaciones, empresaId } = body;
   const matricula = normalizeMatricula(body.matricula);
 
   return {
@@ -43,17 +48,18 @@ const buildAeronaveData = (body) => {
     modelo,
     fabricante: fabricante || null,
     estado: estado || undefined,
-    observaciones: observaciones || null
+    observaciones: observaciones || null,
+    empresaId
   };
 };
 
 const createAeronave = async (req, res) => {
   try {
     const matricula = normalizeMatricula(req.body.matricula);
-    const { modelo } = req.body;
+    const { modelo, empresaId } = req.body;
 
-    if (!hasRequiredAeronaveFields({ matricula, modelo })) {
-      return res.status(400).json({ message: "La matricula y el modelo de la aeronave son obligatorios" });
+    if (!hasRequiredAeronaveFields({ matricula, modelo, empresaId })) {
+      return res.status(400).json({ message: "La matricula, el modelo y la empresa de la aeronave son obligatorios" });
     }
 
     if (!isEstadoValido(req.body.estado)) {
@@ -70,16 +76,22 @@ const createAeronave = async (req, res) => {
     if (isUniqueConstraint(error)) {
       return res.status(409).json({ message: "Ya existe una aeronave con esa matricula" });
     }
+    if (isForeignKeyError(error)) {
+      return res.status(400).json({ message: "La empresa asociada no existe" });
+    }
     return res.status(500).json({ message: "No se pudo crear la aeronave" });
   }
 };
 
 const getAeronaves = async (req, res) => {
   try {
-    const { estado } = req.query;
+    const { estado, empresaId } = req.query;
 
     const aeronaves = await prisma.aeronave.findMany({
-      where: estado ? { estado } : undefined,
+      where: {
+        ...(estado ? { estado } : undefined),
+        ...(empresaId ? { empresaId } : undefined)
+      },
       select: aeronaveSelect,
       orderBy: { createdAt: "desc" }
     });
@@ -110,10 +122,10 @@ const getAeronaveById = async (req, res) => {
 const updateAeronave = async (req, res) => {
   try {
     const matricula = normalizeMatricula(req.body.matricula);
-    const { modelo } = req.body;
+    const { modelo, empresaId } = req.body;
 
-    if (!hasRequiredAeronaveFields({ matricula, modelo })) {
-      return res.status(400).json({ message: "La matricula y el modelo de la aeronave son obligatorios" });
+    if (!hasRequiredAeronaveFields({ matricula, modelo, empresaId })) {
+      return res.status(400).json({ message: "La matricula, el modelo y la empresa de la aeronave son obligatorios" });
     }
 
     if (!isEstadoValido(req.body.estado)) {
@@ -133,6 +145,9 @@ const updateAeronave = async (req, res) => {
     }
     if (isUniqueConstraint(error)) {
       return res.status(409).json({ message: "Ya existe una aeronave con esa matricula" });
+    }
+    if (isForeignKeyError(error)) {
+      return res.status(400).json({ message: "La empresa asociada no existe" });
     }
     return res.status(500).json({ message: "No se pudo actualizar la aeronave" });
   }
