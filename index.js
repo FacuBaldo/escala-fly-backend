@@ -7,6 +7,7 @@ const usuarioRoutes = require("./routes/UsuarioRoute");
 const empresaRoutes = require("./routes/EmpresaRoute");
 const campoRoutes = require("./routes/CampoRoute");
 const productoRoutes = require("./routes/ProductoRoute");
+const aeronaveRoutes = require("./routes/AeronaveRoute");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,6 +20,7 @@ app.use("/api", usuarioRoutes);
 app.use("/api", empresaRoutes);
 app.use("/api", campoRoutes);
 app.use("/api", productoRoutes);
+app.use("/api", aeronaveRoutes);
 
 app.get("/", (req, res) => {
   res.json({

@@ -39,6 +39,9 @@ model Empresa {
   Aeronave  Aeronave[]
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
+  aeronaves Aeronave[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Campo {
@@ -49,6 +52,19 @@ model Campo {
   empresa   Empresa  @relation(fields: [empresaId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Aeronave {
+  id            String         @id @default(uuid())
+  matricula     String         @unique
+  modelo        String
+  fabricante    String?
+  estado        EstadoAeronave @default(ACTIVA)
+  observaciones String?
+  empresaId     String
+  empresa       Empresa        @relation(fields: [empresaId], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model Usuario {
