@@ -47,7 +47,7 @@ const iniciarSesion = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: usuario.id, email: usuario.email, rol: usuario.rol },
+      { sub: usuario.id, email: usuario.email, rol: usuario.rol, empresaId: usuario.empresaId },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
@@ -63,6 +63,29 @@ const iniciarSesion = async (req, res) => {
   }
 };
 
+const getSesionActual = async (req, res) => {
+  const usuario = await prisma.usuario.findUnique({
+    where: { id: req.auth.usuarioId },
+    select: {
+      id: true,
+      nombre: true,
+      apellido: true,
+      email: true,
+      rol: true,
+      empresaId: true,
+      createdAt: true,
+      updatedAt: true
+    }
+  });
+
+  if (!usuario) {
+    return res.status(401).json({ message: "Token invalido" });
+  }
+
+  return res.json(usuario);
+};
+
 module.exports = {
+  getSesionActual,
   iniciarSesion
 };

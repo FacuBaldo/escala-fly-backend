@@ -1,5 +1,6 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
+const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
 
 const ESTADOS_VALIDOS = ["ACTIVA", "EN_MANTENIMIENTO", "INACTIVA"];
 
@@ -39,8 +40,8 @@ const isForeignKeyError = (error) => {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
 };
 
-const buildAeronaveData = (body) => {
-  const { modelo, fabricante, estado, observaciones, empresaId } = body;
+const buildAeronaveData = (body, empresaId) => {
+  const { modelo, fabricante, estado, observaciones } = body;
   const matricula = normalizeMatricula(body.matricula);
 
   return {
@@ -56,7 +57,8 @@ const buildAeronaveData = (body) => {
 const createAeronave = async (req, res) => {
   try {
     const matricula = normalizeMatricula(req.body.matricula);
-    const { modelo, empresaId } = req.body;
+    const { modelo } = req.body;
+    const empresaId = getEmpresaIdParaEscritura(req);
 
     if (!hasRequiredAeronaveFields({ matricula, modelo, empresaId })) {
       return res.status(400).json({ message: "La matricula, el modelo y la empresa de la aeronave son obligatorios" });
@@ -67,7 +69,7 @@ const createAeronave = async (req, res) => {
     }
 
     const aeronave = await prisma.aeronave.create({
-      data: buildAeronaveData(req.body),
+      data: buildAeronaveData(req.body, empresaId),
       select: aeronaveSelect
     });
 
@@ -85,13 +87,10 @@ const createAeronave = async (req, res) => {
 
 const getAeronaves = async (req, res) => {
   try {
-    const { estado, empresaId } = req.query;
+    const { estado } = req.query;
 
     const aeronaves = await prisma.aeronave.findMany({
-      where: {
-        ...(estado ? { estado } : undefined),
-        ...(empresaId ? { empresaId } : undefined)
-      },
+      where: getWhereEmpresa(req, estado ? { estado } : {}),
       select: aeronaveSelect,
       orderBy: { createdAt: "desc" }
     });
@@ -104,8 +103,8 @@ const getAeronaves = async (req, res) => {
 
 const getAeronaveById = async (req, res) => {
   try {
-    const aeronave = await prisma.aeronave.findUnique({
-      where: { id: req.params.id },
+    const aeronave = await prisma.aeronave.findFirst({
+      where: getWhereRecursoPorId(req),
       select: aeronaveSelect
     });
 
@@ -122,7 +121,8 @@ const getAeronaveById = async (req, res) => {
 const updateAeronave = async (req, res) => {
   try {
     const matricula = normalizeMatricula(req.body.matricula);
-    const { modelo, empresaId } = req.body;
+    const { modelo } = req.body;
+    const empresaId = getEmpresaIdParaEscritura(req);
 
     if (!hasRequiredAeronaveFields({ matricula, modelo, empresaId })) {
       return res.status(400).json({ message: "La matricula, el modelo y la empresa de la aeronave son obligatorios" });
@@ -132,9 +132,18 @@ const updateAeronave = async (req, res) => {
       return res.status(400).json({ message: "El estado de la aeronave no es valido" });
     }
 
+    const aeronaveActual = await prisma.aeronave.findFirst({
+      where: getWhereRecursoPorId(req),
+      select: { id: true }
+    });
+
+    if (!aeronaveActual) {
+      return res.status(404).json({ message: "La aeronave no existe" });
+    }
+
     const aeronave = await prisma.aeronave.update({
-      where: { id: req.params.id },
-      data: buildAeronaveData(req.body),
+      where: { id: aeronaveActual.id },
+      data: buildAeronaveData(req.body, empresaId),
       select: aeronaveSelect
     });
 
@@ -155,8 +164,17 @@ const updateAeronave = async (req, res) => {
 
 const deleteAeronave = async (req, res) => {
   try {
+    const aeronaveActual = await prisma.aeronave.findFirst({
+      where: getWhereRecursoPorId(req),
+      select: { id: true }
+    });
+
+    if (!aeronaveActual) {
+      return res.status(404).json({ message: "La aeronave no existe" });
+    }
+
     const aeronave = await prisma.aeronave.delete({
-      where: { id: req.params.id },
+      where: { id: aeronaveActual.id },
       select: aeronaveSelect
     });
 

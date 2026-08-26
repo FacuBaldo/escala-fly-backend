@@ -1,5 +1,6 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
+const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
 
 const productoSelect = {
   id: true,
@@ -27,7 +28,8 @@ const isForeignKeyError = (error) => {
 
 const createProducto = async (req, res) => {
   try {
-    const { nombre, marca, tipo, unidadMedida, descripcion, empresaId } = req.body;
+    const { nombre, marca, tipo, unidadMedida, descripcion } = req.body;
+    const empresaId = getEmpresaIdParaEscritura(req);
 
     if (!hasRequiredProductoFields({ nombre, tipo, unidadMedida, empresaId })) {
       return res.status(400).json({
@@ -58,12 +60,9 @@ const createProducto = async (req, res) => {
 
 const getProductos = async (req, res) => {
   try {
-    const { empresaId, tipo } = req.query;
+    const { tipo } = req.query;
 
-    const where = {};
-    if (empresaId) {
-      where.empresaId = empresaId;
-    }
+    const where = getWhereEmpresa(req);
     if (tipo) {
       where.tipo = tipo;
     }
@@ -82,8 +81,8 @@ const getProductos = async (req, res) => {
 
 const getProductoById = async (req, res) => {
   try {
-    const producto = await prisma.producto.findUnique({
-      where: { id: req.params.id },
+    const producto = await prisma.producto.findFirst({
+      where: getWhereRecursoPorId(req),
       select: productoSelect
     });
 
@@ -99,7 +98,8 @@ const getProductoById = async (req, res) => {
 
 const updateProducto = async (req, res) => {
   try {
-    const { nombre, marca, tipo, unidadMedida, descripcion, empresaId } = req.body;
+    const { nombre, marca, tipo, unidadMedida, descripcion } = req.body;
+    const empresaId = getEmpresaIdParaEscritura(req);
 
     if (!hasRequiredProductoFields({ nombre, tipo, unidadMedida, empresaId })) {
       return res.status(400).json({
@@ -107,8 +107,17 @@ const updateProducto = async (req, res) => {
       });
     }
 
+    const productoActual = await prisma.producto.findFirst({
+      where: getWhereRecursoPorId(req),
+      select: { id: true }
+    });
+
+    if (!productoActual) {
+      return res.status(404).json({ message: "El producto no existe" });
+    }
+
     const producto = await prisma.producto.update({
-      where: { id: req.params.id },
+      where: { id: productoActual.id },
       data: {
         nombre,
         marca: marca || null,
@@ -134,8 +143,17 @@ const updateProducto = async (req, res) => {
 
 const deleteProducto = async (req, res) => {
   try {
+    const productoActual = await prisma.producto.findFirst({
+      where: getWhereRecursoPorId(req),
+      select: { id: true }
+    });
+
+    if (!productoActual) {
+      return res.status(404).json({ message: "El producto no existe" });
+    }
+
     const producto = await prisma.producto.delete({
-      where: { id: req.params.id },
+      where: { id: productoActual.id },
       select: productoSelect
     });
 

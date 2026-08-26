@@ -1,5 +1,6 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
+const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
 
 const campoSelect = {
   id: true,
@@ -24,7 +25,8 @@ const isForeignKeyError = (error) => {
 
 const createCampo = async (req, res) => {
   try {
-    const { nombre, ubicacion, empresaId } = req.body;
+    const { nombre, ubicacion } = req.body;
+    const empresaId = getEmpresaIdParaEscritura(req);
 
     if (!hasRequiredCampoFields({ nombre, empresaId })) {
       return res.status(400).json({ message: "El nombre y la empresa del campo son obligatorios" });
@@ -50,10 +52,8 @@ const createCampo = async (req, res) => {
 
 const getCampos = async (req, res) => {
   try {
-    const { empresaId } = req.query;
-
     const campos = await prisma.campo.findMany({
-      where: empresaId ? { empresaId } : undefined,
+      where: getWhereEmpresa(req),
       select: campoSelect,
       orderBy: { createdAt: "desc" }
     });
@@ -66,8 +66,8 @@ const getCampos = async (req, res) => {
 
 const getCampoById = async (req, res) => {
   try {
-    const campo = await prisma.campo.findUnique({
-      where: { id: req.params.id },
+    const campo = await prisma.campo.findFirst({
+      where: getWhereRecursoPorId(req),
       select: campoSelect
     });
 
@@ -83,14 +83,24 @@ const getCampoById = async (req, res) => {
 
 const updateCampo = async (req, res) => {
   try {
-    const { nombre, ubicacion, empresaId } = req.body;
+    const { nombre, ubicacion } = req.body;
+    const empresaId = getEmpresaIdParaEscritura(req);
 
     if (!hasRequiredCampoFields({ nombre, empresaId })) {
       return res.status(400).json({ message: "El nombre y la empresa del campo son obligatorios" });
     }
 
+    const campoActual = await prisma.campo.findFirst({
+      where: getWhereRecursoPorId(req),
+      select: { id: true }
+    });
+
+    if (!campoActual) {
+      return res.status(404).json({ message: "El campo no existe" });
+    }
+
     const campo = await prisma.campo.update({
-      where: { id: req.params.id },
+      where: { id: campoActual.id },
       data: {
         nombre,
         ubicacion,
@@ -113,8 +123,17 @@ const updateCampo = async (req, res) => {
 
 const deleteCampo = async (req, res) => {
   try {
+    const campoActual = await prisma.campo.findFirst({
+      where: getWhereRecursoPorId(req),
+      select: { id: true }
+    });
+
+    if (!campoActual) {
+      return res.status(404).json({ message: "El campo no existe" });
+    }
+
     const campo = await prisma.campo.delete({
-      where: { id: req.params.id },
+      where: { id: campoActual.id },
       select: campoSelect
     });
 

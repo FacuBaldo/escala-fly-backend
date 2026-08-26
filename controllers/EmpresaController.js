@@ -1,5 +1,6 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
+const { isAdmin } = require("../utils/autorizacion");
 
 const empresaSelect = {
   id: true,
@@ -46,9 +47,10 @@ const createEmpresa = async (req, res) => {
   }
 };
 
-const getEmpresas = async (_req, res) => {
+const getEmpresas = async (req, res) => {
   try {
     const empresas = await prisma.empresa.findMany({
+      where: isAdmin(req) ? undefined : { id: req.auth.empresaId },
       select: empresaSelect,
       orderBy: { createdAt: "desc" }
     });
@@ -61,7 +63,11 @@ const getEmpresas = async (_req, res) => {
 
 const getEmpresaById = async (req, res) => {
   try {
-    const empresa = await prisma.empresa.findUnique({
+    if (!isAdmin(req) && req.params.id !== req.auth.empresaId) {
+      return res.status(404).json({ message: "La empresa no existe" });
+    }
+
+    const empresa = await prisma.empresa.findFirst({
       where: { id: req.params.id },
       select: empresaSelect
     });
@@ -85,8 +91,12 @@ const updateEmpresa = async (req, res) => {
       return res.status(400).json({ message: "El nombre de la empresa es obligatorio" });
     }
 
+    if (!isAdmin(req) && req.params.id !== req.auth.empresaId) {
+      return res.status(404).json({ message: "La empresa no existe" });
+    }
+
     const empresa = await prisma.empresa.update({
-      where: { id: req.params.id },
+      where: { id: isAdmin(req) ? req.params.id : req.auth.empresaId },
       data: {
         nombre,
         email,

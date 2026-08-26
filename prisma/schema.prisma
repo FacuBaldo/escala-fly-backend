@@ -10,7 +10,7 @@ enum Rol {
   ADMIN
   ENCARGADO
   PILOTO
-  AGROPECUARIO
+  CLIENTE
 }
 
 enum EstadoAeronave {
@@ -49,6 +49,8 @@ model Campo {
   empresa   Empresa  @relation(fields: [empresaId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([empresaId])
 }
 
 model Aeronave {
@@ -62,6 +64,8 @@ model Aeronave {
   empresa       Empresa        @relation(fields: [empresaId], references: [id])
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  @@index([empresaId])
 }
 
 model Usuario {
@@ -70,11 +74,13 @@ model Usuario {
   apellido   String
   email      String   @unique
   contrasena String
-  rol        Rol      @default(AGROPECUARIO)
+  rol        Rol      @default(CLIENTE)
   empresaId  String?
   empresa    Empresa? @relation(fields: [empresaId], references: [id])
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  @@index([empresaId])
 }
 
 model Producto {
@@ -88,4 +94,6 @@ model Producto {
   empresa      Empresa      @relation(fields: [empresaId], references: [id])
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
+
+  @@index([empresaId])
 }
