@@ -580,21 +580,25 @@ const bajaLote = async (req, res) => {
 
 /**
  * DELETE /api/lotes/:id
- * Hard-delete: Eliminación física reservada para administradores.
+ * Hard-delete: Eliminación física (ADMIN o ENCARGADO de la empresa del lote).
  */
 const deleteLote = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!isAdmin(req)) {
-      return res.status(403).json({
-        message: "Solo los administradores pueden eliminar lotes permanentemente. Utilice la baja lógica en su lugar."
-      });
-    }
-
-    const checkQuery = `SELECT "id" FROM "Lote" WHERE "id" = $1;`;
+    // Buscar lote y validar tenant: el ENCARGADO solo elimina lotes de los campos de su empresa
+    const checkQuery = `
+      SELECT l."id", c."empresaId"
+      FROM "Lote" l
+      JOIN "Campo" c ON l."campoId" = c."id"
+      WHERE l."id" = $1;
+    `;
     const existentes = await prisma.$queryRawUnsafe(checkQuery, id);
     if (!existentes || existentes.length === 0) {
+      return res.status(404).json({ message: "El lote no existe" });
+    }
+
+    if (!isAdmin(req) && existentes[0].empresaId !== req.auth.empresaId) {
       return res.status(404).json({ message: "El lote no existe" });
     }
 
