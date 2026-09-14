@@ -124,12 +124,16 @@ const deleteCampo = async (req, res) => {
       return res.status(404).json({ message: "El campo no existe" });
     }
 
-    const campo = await prisma.campo.delete({
-      where: { id: campoActual.id },
-      select: campoSelect
-    });
+    // Los lotes pertenecen al campo: se eliminan junto con el en una misma transaccion
+    const [lotesEliminados, campo] = await prisma.$transaction([
+      prisma.$executeRawUnsafe(`DELETE FROM "Lote" WHERE "campoId" = $1;`, campoActual.id),
+      prisma.campo.delete({
+        where: { id: campoActual.id },
+        select: campoSelect
+      })
+    ]);
 
-    return res.json(campo);
+    return res.json({ ...campo, lotesEliminados });
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "El campo no existe" });

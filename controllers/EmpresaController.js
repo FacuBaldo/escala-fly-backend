@@ -126,49 +126,56 @@ const updateEmpresa = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/empresas/:id (solo ADMIN)
+ * Elimina la empresa junto con todos sus datos asociados: usuarios, campos y sus lotes,
+ * productos y aeronaves. Todo se ejecuta en una transaccion: si algo falla no se borra nada.
+ */
 const deleteEmpresa = async (req, res) => {
   try {
     const empresa = await prisma.empresa.findUnique({
       where: { id: req.params.id },
-      select: {
-        ...empresaSelect,
-        _count: { select: { usuarios: true, campos: true, productos: true, aeronaves: true } }
-      }
+      select: empresaSelect
     });
 
     if (!empresa) {
       return res.status(404).json({ message: "La empresa no existe" });
     }
 
-    // Borrar una empresa con datos asociados dejaria usuarios sin empresa (sin acceso)
-    // y fallaria por las claves foraneas de campos, productos y aeronaves.
-    const { _count: cantidades, ...empresaData } = empresa;
-    const asociados = [
-      [cantidades.usuarios, "usuarios"],
-      [cantidades.campos, "campos"],
-      [cantidades.productos, "productos"],
-      [cantidades.aeronaves, "aeronaves"]
-    ]
-      .filter(([cantidad]) => cantidad > 0)
-      .map(([cantidad, nombre]) => `${cantidad} ${nombre}`);
+    const eliminados = await prisma.$transaction(async (tx) => {
+      const where = { empresaId: empresa.id };
 
-    if (asociados.length > 0) {
-      return res.status(409).json({
-        message: `No se puede eliminar la empresa porque tiene ${asociados.join(", ")} asociados`
-      });
-    }
+      // Los lotes dependen de los campos, por eso se eliminan primero
+      const lotes = await tx.$executeRawUnsafe(
+        `DELETE FROM "Lote" WHERE "campoId" IN (SELECT "id" FROM "Campo" WHERE "empresaId" = $1);`,
+        empresa.id
+      );
+      const campos = await tx.campo.deleteMany({ where });
+      const productos = await tx.producto.deleteMany({ where });
+      const aeronaves = await tx.aeronave.deleteMany({ where });
+      const usuarios = await tx.usuario.deleteMany({ where });
 
-    await prisma.empresa.delete({ where: { id: empresaData.id } });
+      await tx.empresa.delete({ where: { id: empresa.id } });
 
-    return res.json(empresaData);
+      return {
+        usuarios: usuarios.count,
+        campos: campos.count,
+        lotes,
+        productos: productos.count,
+        aeronaves: aeronaves.count
+      };
+    }, { timeout: 20000 });
+
+    return res.json({ ...empresa, eliminados });
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "La empresa no existe" });
     }
     if (isForeignKeyError(error)) {
-      return res.status(409).json({ message: "No se puede eliminar la empresa porque tiene datos asociados" });
+      return res.status(409).json({ message: "No se pudo eliminar la empresa porque tiene datos asociados que no se pueden eliminar" });
     }
 
+    console.error("Error al eliminar empresa:", error);
     return res.status(500).json({ message: "No se pudo eliminar la empresa" });
   }
 };
