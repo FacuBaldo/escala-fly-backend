@@ -85,6 +85,34 @@ const verificarAccesoACampo = async (campoId, req) => {
 };
 
 /**
+ * Verifica con PostGIS que el polígono sea topológicamente válido (sin autointersecciones
+ * ni superficie nula). Un polígono en forma de "moño" se guardaría con 0 ha si no se valida.
+ */
+const validarTopologiaGeometria = async (geometriaStr) => {
+  const resultados = await prisma.$queryRawUnsafe(
+    `SELECT ST_IsValid(g) AS "valida", ST_IsValidReason(g) AS "motivo", ST_Area(g::geography) AS "area"
+     FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), 4326) AS g) AS geometria;`,
+    geometriaStr
+  );
+  const { valida, motivo, area } = resultados[0];
+
+  if (!valida) {
+    const esAutointerseccion = typeof motivo === "string" && motivo.toLowerCase().includes("self-intersection");
+    return {
+      error: esAutointerseccion
+        ? "El polígono del lote no puede cruzarse a sí mismo. Verifique el orden de los vértices."
+        : "La geometría del lote es inválida. Verifique que el polígono esté bien formado."
+    };
+  }
+
+  if (!(Number(area) > 0)) {
+    return { error: "El polígono del lote debe tener una superficie mayor a cero" };
+  }
+
+  return {};
+};
+
+/**
  * Formatea la fila del lote devuelta por Postgres, convirtiendo el texto GeoJSON en objeto.
  */
 const formatearLote = (row) => {
@@ -125,6 +153,12 @@ const createLote = async (req, res) => {
     }
 
     const geometriaStr = JSON.stringify(validacionGeo.geometria);
+
+    const validacionTopologia = await validarTopologiaGeometria(geometriaStr);
+    if (validacionTopologia.error) {
+      return res.status(400).json({ message: validacionTopologia.error });
+    }
+
     const id = crypto.randomUUID();
 
     const insertQuery = `
@@ -368,6 +402,12 @@ const updateLote = async (req, res) => {
         return res.status(400).json({ message: validacionGeo.error });
       }
       const geoStr = JSON.stringify(validacionGeo.geometria);
+
+      const validacionTopologia = await validarTopologiaGeometria(geoStr);
+      if (validacionTopologia.error) {
+        return res.status(400).json({ message: validacionTopologia.error });
+      }
+
       const geoPlaceholder = `$${paramIndex++}`;
       params.push(geoStr);
 
