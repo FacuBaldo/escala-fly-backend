@@ -3,9 +3,42 @@ const prisma = require("../configs/prisma");
 const { isAdmin } = require("../utils/autorizacion");
 
 /**
+ * Valida y normaliza un anillo de coordenadas [lng, lat]: verifica cada punto
+ * y lo cierra si el primer y último punto no coinciden. Devuelve una copia.
+ */
+const normalizarAnillo = (anillo, descripcion) => {
+  if (!Array.isArray(anillo) || anillo.length < 3) {
+    return { error: `El ${descripcion} del polígono debe tener al menos 3 vértices` };
+  }
+
+  for (const pt of anillo) {
+    if (!Array.isArray(pt) || pt.length < 2 || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) {
+      return { error: "Coordenadas inválidas en el polígono. Deben ser pares numéricos [longitud, latitud]" };
+    }
+    const [lng, lat] = pt;
+    if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+      return { error: `Coordenadas fuera de rango: [${lng}, ${lat}]. Longitud: [-180, 180], Latitud: [-90, 90]` };
+    }
+  }
+
+  const puntos = anillo.map(([lng, lat]) => [lng, lat]);
+  const first = puntos[0];
+  const last = puntos[puntos.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    puntos.push([first[0], first[1]]);
+  }
+
+  if (puntos.length < 4) {
+    return { error: "Un polígono cerrado requiere al menos 4 puntos (primer y último idénticos)" };
+  }
+
+  return { anillo: puntos };
+};
+
+/**
  * Valida y normaliza una geometría GeoJSON de tipo Polygon.
  * Acepta tanto un objeto Geometry como un Feature de GeoJSON.
- * Auto-cierra el anillo exterior si el primer y último punto no coinciden.
+ * Valida y cierra todos los anillos (exterior e interiores) sin modificar el objeto recibido.
  */
 const parseAndValidateGeometria = (geoInput) => {
   if (!geoInput) {
@@ -22,11 +55,11 @@ const parseAndValidateGeometria = (geoInput) => {
   }
 
   // Si viene envuelto en un Feature GeoJSON, extraer la geometría
-  if (geo.type === "Feature" && geo.geometry) {
+  if (geo && geo.type === "Feature" && geo.geometry) {
     geo = geo.geometry;
   }
 
-  if (!geo || geo.type !== "Polygon") {
+  if (!geo || typeof geo !== "object" || geo.type !== "Polygon") {
     return { error: "La geometría debe ser de tipo 'Polygon'" };
   }
 
@@ -34,35 +67,29 @@ const parseAndValidateGeometria = (geoInput) => {
     return { error: "El polígono debe contener al menos un anillo de coordenadas" };
   }
 
-  const ring = geo.coordinates[0];
-  if (!Array.isArray(ring) || ring.length < 3) {
-    return { error: "El polígono debe tener al menos 3 vértices" };
-  }
-
-  // Validar cada punto [lng, lat]
-  for (const pt of ring) {
-    if (!Array.isArray(pt) || pt.length < 2 || typeof pt[0] !== "number" || typeof pt[1] !== "number") {
-      return { error: "Coordenadas inválidas en el polígono. Deben ser pares numéricos [longitud, latitud]" };
+  const coordinates = [];
+  for (const [indice, anillo] of geo.coordinates.entries()) {
+    const resultado = normalizarAnillo(anillo, indice === 0 ? "contorno" : `hueco ${indice}`);
+    if (resultado.error) {
+      return { error: resultado.error };
     }
-    const [lng, lat] = pt;
-    if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
-      return { error: `Coordenadas fuera de rango: [${lng}, ${lat}]. Longitud: [-180, 180], Latitud: [-90, 90]` };
-    }
+    coordinates.push(resultado.anillo);
   }
 
-  // Auto-cerrar el polígono si el primer y último punto difieren
-  const first = ring[0];
-  const last = ring[ring.length - 1];
-  if (first[0] !== last[0] || first[1] !== last[1]) {
-    ring.push([first[0], first[1]]);
-  }
-
-  if (ring.length < 4) {
-    return { error: "Un polígono cerrado requiere al menos 4 puntos (primer y último idénticos)" };
-  }
-
-  return { geometria: geo };
+  return { geometria: { type: "Polygon", coordinates } };
 };
+
+/**
+ * Interpreta un valor booleano recibido en el body o en la query ("true"/"false" o boolean).
+ * Devuelve undefined si el valor no es un booleano reconocible.
+ */
+const parseBooleano = (valor) => {
+  if (valor === true || valor === "true") return true;
+  if (valor === false || valor === "false") return false;
+  return undefined;
+};
+
+const esTextoOpcional = (valor) => valor === undefined || valor === null || typeof valor === "string";
 
 /**
  * Verifica si el usuario tiene acceso al campo especificado según multi-tenancy.
@@ -132,11 +159,15 @@ const createLote = async (req, res) => {
   try {
     const { nombre, descripcion, campoId, geometria: geometriaInput } = req.body;
 
-    if (!nombre || !nombre.trim()) {
+    if (typeof nombre !== "string" || !nombre.trim()) {
       return res.status(400).json({ message: "El nombre del lote es obligatorio" });
     }
 
-    if (!campoId) {
+    if (!esTextoOpcional(descripcion)) {
+      return res.status(400).json({ message: "La descripción del lote debe ser un texto" });
+    }
+
+    if (typeof campoId !== "string" || !campoId) {
       return res.status(400).json({ message: "El campo al que pertenece el lote es obligatorio" });
     }
 
@@ -227,7 +258,16 @@ const createLote = async (req, res) => {
  */
 const getLotes = async (req, res) => {
   try {
-    const { campoId, activo, empresaId: empresaIdQuery } = req.query;
+    const { campoId, empresaId: empresaIdQuery } = req.query;
+    const activo = req.query.activo === undefined ? undefined : parseBooleano(req.query.activo);
+
+    if (req.query.activo !== undefined && activo === undefined) {
+      return res.status(400).json({ message: "El filtro activo debe ser true o false" });
+    }
+
+    if ((campoId !== undefined && typeof campoId !== "string") || (empresaIdQuery !== undefined && typeof empresaIdQuery !== "string")) {
+      return res.status(400).json({ message: "Los filtros campoId y empresaId deben ser valores únicos" });
+    }
 
     const conditions = [];
     const params = [];
@@ -251,7 +291,7 @@ const getLotes = async (req, res) => {
     // Filtro por estado activo (opcional)
     if (activo !== undefined) {
       conditions.push(`l."activo" = $${paramIndex++}`);
-      params.push(activo === "true");
+      params.push(activo);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -338,7 +378,24 @@ const getLoteById = async (req, res) => {
 const updateLote = async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, descripcion, campoId, geometria: geometriaInput, activo } = req.body;
+    const { nombre, descripcion, campoId, geometria: geometriaInput } = req.body;
+    const activo = req.body.activo === undefined ? undefined : parseBooleano(req.body.activo);
+
+    if (nombre !== undefined && (typeof nombre !== "string" || !nombre.trim())) {
+      return res.status(400).json({ message: "El nombre del lote no puede estar vacío" });
+    }
+
+    if (!esTextoOpcional(descripcion)) {
+      return res.status(400).json({ message: "La descripción del lote debe ser un texto" });
+    }
+
+    if (campoId !== undefined && typeof campoId !== "string") {
+      return res.status(400).json({ message: "El campo del lote no es válido" });
+    }
+
+    if (req.body.activo !== undefined && activo === undefined) {
+      return res.status(400).json({ message: "El estado del lote debe ser true o false" });
+    }
 
     // Buscar lote actual con su campo
     const checkQuery = `
@@ -374,9 +431,6 @@ const updateLote = async (req, res) => {
     let paramIndex = 1;
 
     if (nombre !== undefined) {
-      if (!nombre.trim()) {
-        return res.status(400).json({ message: "El nombre del lote no puede estar vacío" });
-      }
       setClauses.push(`"nombre" = $${paramIndex++}`);
       params.push(nombre.trim());
     }
@@ -393,7 +447,7 @@ const updateLote = async (req, res) => {
 
     if (activo !== undefined) {
       setClauses.push(`"activo" = $${paramIndex++}`);
-      params.push(Boolean(activo));
+      params.push(activo);
     }
 
     if (geometriaInput !== undefined) {
@@ -472,7 +526,12 @@ const updateLote = async (req, res) => {
 const bajaLote = async (req, res) => {
   try {
     const { id } = req.params;
-    const nuevoEstado = req.body && req.body.activo !== undefined ? Boolean(req.body.activo) : false;
+    const activoRecibido = req.body ? req.body.activo : undefined;
+    const nuevoEstado = activoRecibido === undefined ? false : parseBooleano(activoRecibido);
+
+    if (nuevoEstado === undefined) {
+      return res.status(400).json({ message: "El estado del lote debe ser true o false" });
+    }
 
     // Buscar lote y validar tenant
     const checkQuery = `

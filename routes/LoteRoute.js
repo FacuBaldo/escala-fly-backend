@@ -10,6 +10,6 @@ router.get("/lotes", verificarToken, permitirRoles("ADMIN", "ENCARGADO"), LoteCo
 router.get("/lotes/:id", verificarToken, permitirRoles("ADMIN", "ENCARGADO"), LoteController.getLoteById);
 router.put("/lotes/:id", verificarToken, permitirRoles("ADMIN", "ENCARGADO"), LoteController.updateLote);
 router.patch("/lotes/:id/baja", verificarToken, permitirRoles("ADMIN", "ENCARGADO"), LoteController.bajaLote);
-router.delete("/lotes/:id", verificarToken, permitirRoles("ADMIN", "ENCARGADO"), LoteController.deleteLote);
+router.delete("/lotes/:id", verificarToken, permitirRoles("ADMIN"), LoteController.deleteLote);
 
 module.exports = router;
