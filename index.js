@@ -9,6 +9,7 @@ const campoRoutes = require("./routes/CampoRoute");
 const productoRoutes = require("./routes/ProductoRoute");
 const aeronaveRoutes = require("./routes/AeronaveRoute");
 const loteRoutes = require("./routes/LoteRoute");
+const manejarErrores = require("./middlewares/manejarErrores");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,6 +30,12 @@ app.get("/", (req, res) => {
     message: "Server running successfully"
   });
 });
+
+app.use((req, res) => {
+  res.status(404).json({ message: "Recurso no encontrado" });
+});
+
+app.use(manejarErrores);
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

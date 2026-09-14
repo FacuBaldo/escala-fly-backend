@@ -1,9 +1,21 @@
 const bcrypt = require("bcryptjs");
-const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
 const { ROLES, isAdmin } = require("../utils/autorizacion");
+const {
+  LONGITUD_MINIMA_CONTRASENA,
+  esEmailValido,
+  esTextoNoVacio,
+  esValorDeEnum,
+  isForeignKeyError,
+  isRecordNotFound,
+  isUniqueConstraint,
+  normalizeEmail
+} = require("../utils/validacion");
 
 const SALT_ROUNDS = 10;
+
+// Roles que un ENCARGADO puede crear, editar o eliminar dentro de su empresa
+const ROLES_GESTIONABLES_POR_ENCARGADO = [ROLES.PILOTO, ROLES.CLIENTE];
 
 const usuarioSelect = {
   id: true,
@@ -16,43 +28,65 @@ const usuarioSelect = {
   updatedAt: true
 };
 
-const normalizeEmail = (email) => {
-  return typeof email === "string" ? email.trim().toLowerCase() : email;
+/**
+ * Valida los datos recibidos. Devuelve un mensaje de error o null si son validos.
+ */
+const validarDatosUsuario = (body, { requiereContrasena }) => {
+  const { nombre, apellido, email, contrasena, rol, empresaId } = body;
+
+  if (!esTextoNoVacio(nombre) || !esTextoNoVacio(apellido) || !esTextoNoVacio(email)) {
+    return "Todos los campos son obligatorios";
+  }
+
+  if (!esEmailValido(email)) {
+    return "El correo electronico no es valido";
+  }
+
+  if (requiereContrasena && !esTextoNoVacio(contrasena)) {
+    return "Todos los campos son obligatorios";
+  }
+
+  if (contrasena !== undefined && contrasena !== null && contrasena !== "") {
+    if (typeof contrasena !== "string" || contrasena.length < LONGITUD_MINIMA_CONTRASENA) {
+      return `La contrasena debe tener al menos ${LONGITUD_MINIMA_CONTRASENA} caracteres`;
+    }
+  }
+
+  if (rol !== undefined && rol !== "" && !esValorDeEnum(rol, Object.values(ROLES))) {
+    return "El rol no es valido";
+  }
+
+  if (empresaId !== undefined && empresaId !== null && typeof empresaId !== "string") {
+    return "La empresa no es valida";
+  }
+
+  return null;
 };
 
-const hasRequiredUsuarioFields = ({ nombre, apellido, email, contrasena }) => {
-  return Boolean(nombre && apellido && email && contrasena);
+/**
+ * Un ENCARGADO solo puede gestionar pilotos y clientes de su empresa, ademas de su propio perfil.
+ */
+const puedeGestionarUsuario = (req, usuarioObjetivo) => {
+  if (isAdmin(req)) {
+    return true;
+  }
+
+  return usuarioObjetivo.id === req.auth.usuarioId || ROLES_GESTIONABLES_POR_ENCARGADO.includes(usuarioObjetivo.rol);
 };
 
-const hasRequiredUsuarioUpdateFields = ({ nombre, apellido, email }) => {
-  return Boolean(nombre && apellido && email);
-};
-
-const isRecordNotFound = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025";
-};
-
-const isUniqueConstraint = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
-};
-
-const isForeignKeyError = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
-};
-
-const getRolesAsignables = (req) => {
-  return isAdmin(req)
-    ? Object.values(ROLES)
-    : [ROLES.ENCARGADO, ROLES.PILOTO, ROLES.CLIENTE];
-};
-
-const getUsuarioDataAutorizada = async (req, contrasenaHasheada, usuarioActual = {}) => {
-  const rol = req.body.rol || usuarioActual.rol || ROLES.CLIENTE;
+const getUsuarioDataAutorizada = (req, contrasenaHasheada, usuarioActual = null) => {
+  const rol = req.body.rol || usuarioActual?.rol || ROLES.CLIENTE;
+  const cambiaRol = !usuarioActual || rol !== usuarioActual.rol;
+  const esPropioUsuario = usuarioActual?.id === req.auth.usuarioId;
   const empresaId = isAdmin(req)
-    ? req.body.empresaId || usuarioActual.empresaId || null
+    ? req.body.empresaId || usuarioActual?.empresaId || null
     : req.auth.empresaId;
 
-  if (!getRolesAsignables(req).includes(rol)) {
+  if (esPropioUsuario && cambiaRol) {
+    return { error: { status: 403, message: "No podes cambiar tu propio rol" } };
+  }
+
+  if (cambiaRol && !isAdmin(req) && !ROLES_GESTIONABLES_POR_ENCARGADO.includes(rol)) {
     return { error: { status: 403, message: "No tenes permisos para asignar ese rol" } };
   }
 
@@ -62,8 +96,8 @@ const getUsuarioDataAutorizada = async (req, contrasenaHasheada, usuarioActual =
 
   return {
     data: {
-      nombre: req.body.nombre,
-      apellido: req.body.apellido,
+      nombre: req.body.nombre.trim(),
+      apellido: req.body.apellido.trim(),
       email: normalizeEmail(req.body.email),
       rol,
       empresaId: rol === ROLES.ADMIN ? null : empresaId,
@@ -72,24 +106,29 @@ const getUsuarioDataAutorizada = async (req, contrasenaHasheada, usuarioActual =
   };
 };
 
+const getWhereUsuarioPorId = (req) => ({
+  id: req.params.id,
+  ...(isAdmin(req) ? {} : { empresaId: req.auth.empresaId })
+});
+
 const createUsuario = async (req, res) => {
   try {
-    const { nombre, apellido, contrasena } = req.body;
-    const email = normalizeEmail(req.body.email);
+    const errorValidacion = validarDatosUsuario(req.body, { requiereContrasena: true });
 
-    if (!hasRequiredUsuarioFields({ nombre, apellido, email, contrasena })) {
-      return res.status(400).json({ message: "Todos los campos son obligatorios" });
+    if (errorValidacion) {
+      return res.status(400).json({ message: errorValidacion });
     }
 
-    const contrasenaHasheada = await bcrypt.hash(contrasena, SALT_ROUNDS);
-    const { data, error } = await getUsuarioDataAutorizada(req, contrasenaHasheada);
+    const { data, error } = getUsuarioDataAutorizada(req, null);
 
     if (error) {
       return res.status(error.status).json({ message: error.message });
     }
 
+    const contrasenaHasheada = await bcrypt.hash(req.body.contrasena, SALT_ROUNDS);
+
     const usuario = await prisma.usuario.create({
-      data,
+      data: { ...data, contrasena: contrasenaHasheada },
       select: usuarioSelect
     });
 
@@ -123,10 +162,7 @@ const getUsuarios = async (req, res) => {
 const getUsuarioById = async (req, res) => {
   try {
     const usuario = await prisma.usuario.findFirst({
-      where: {
-        id: req.params.id,
-        ...(isAdmin(req) ? {} : { empresaId: req.auth.empresaId })
-      },
+      where: getWhereUsuarioPorId(req),
       select: usuarioSelect
     });
 
@@ -142,18 +178,14 @@ const getUsuarioById = async (req, res) => {
 
 const updateUsuario = async (req, res) => {
   try {
-    const { nombre, apellido, contrasena } = req.body;
-    const email = normalizeEmail(req.body.email);
+    const errorValidacion = validarDatosUsuario(req.body, { requiereContrasena: false });
 
-    if (!hasRequiredUsuarioUpdateFields({ nombre, apellido, email })) {
-      return res.status(400).json({ message: "Todos los campos son obligatorios" });
+    if (errorValidacion) {
+      return res.status(400).json({ message: errorValidacion });
     }
 
     const usuarioActual = await prisma.usuario.findFirst({
-      where: {
-        id: req.params.id,
-        ...(isAdmin(req) ? {} : { empresaId: req.auth.empresaId })
-      },
+      where: getWhereUsuarioPorId(req),
       select: { id: true, rol: true, empresaId: true }
     });
 
@@ -161,16 +193,22 @@ const updateUsuario = async (req, res) => {
       return res.status(404).json({ message: "El usuario no existe" });
     }
 
-    const contrasenaHasheada = contrasena ? await bcrypt.hash(contrasena, SALT_ROUNDS) : null;
-    const { data, error } = await getUsuarioDataAutorizada(req, contrasenaHasheada, usuarioActual);
+    if (!puedeGestionarUsuario(req, usuarioActual)) {
+      return res.status(403).json({ message: "No tenes permisos para modificar este usuario" });
+    }
+
+    const { data, error } = getUsuarioDataAutorizada(req, null, usuarioActual);
 
     if (error) {
       return res.status(error.status).json({ message: error.message });
     }
 
+    const { contrasena } = req.body;
+    const contrasenaHasheada = contrasena ? await bcrypt.hash(contrasena, SALT_ROUNDS) : null;
+
     const usuario = await prisma.usuario.update({
       where: { id: usuarioActual.id },
-      data,
+      data: { ...data, ...(contrasenaHasheada ? { contrasena: contrasenaHasheada } : {}) },
       select: usuarioSelect
     });
 
@@ -179,7 +217,6 @@ const updateUsuario = async (req, res) => {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "El usuario no existe" });
     }
-
     if (isUniqueConstraint(error)) {
       return res.status(409).json({ message: "El correo electronico ya esta registrado" });
     }
@@ -193,16 +230,21 @@ const updateUsuario = async (req, res) => {
 
 const deleteUsuario = async (req, res) => {
   try {
+    if (req.params.id === req.auth.usuarioId) {
+      return res.status(403).json({ message: "No podes eliminar tu propio usuario" });
+    }
+
     const usuarioActual = await prisma.usuario.findFirst({
-      where: {
-        id: req.params.id,
-        ...(isAdmin(req) ? {} : { empresaId: req.auth.empresaId })
-      },
-      select: { id: true }
+      where: getWhereUsuarioPorId(req),
+      select: { id: true, rol: true }
     });
 
     if (!usuarioActual) {
       return res.status(404).json({ message: "El usuario no existe" });
+    }
+
+    if (!puedeGestionarUsuario(req, usuarioActual)) {
+      return res.status(403).json({ message: "No tenes permisos para eliminar este usuario" });
     }
 
     const usuario = await prisma.usuario.delete({

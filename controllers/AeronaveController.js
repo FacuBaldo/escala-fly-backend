@@ -1,6 +1,12 @@
-const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
 const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
+const {
+  esTextoNoVacio,
+  esTextoOpcional,
+  isForeignKeyError,
+  isRecordNotFound,
+  isUniqueConstraint
+} = require("../utils/validacion");
 
 const ESTADOS_VALIDOS = ["ACTIVA", "EN_MANTENIMIENTO", "INACTIVA"];
 
@@ -21,23 +27,15 @@ const normalizeMatricula = (matricula) => {
 };
 
 const hasRequiredAeronaveFields = ({ matricula, modelo, empresaId }) => {
-  return Boolean(matricula) && Boolean(modelo) && Boolean(empresaId);
+  return esTextoNoVacio(matricula) && esTextoNoVacio(modelo) && esTextoNoVacio(empresaId);
 };
 
 const isEstadoValido = (estado) => {
-  return estado === undefined || ESTADOS_VALIDOS.includes(estado);
+  return estado === undefined || estado === "" || ESTADOS_VALIDOS.includes(estado);
 };
 
-const isRecordNotFound = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025";
-};
-
-const isUniqueConstraint = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
-};
-
-const isForeignKeyError = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
+const hasTiposOpcionalesValidos = ({ fabricante, observaciones }) => {
+  return esTextoOpcional(fabricante) && esTextoOpcional(observaciones);
 };
 
 const buildAeronaveData = (body, empresaId) => {
@@ -46,10 +44,10 @@ const buildAeronaveData = (body, empresaId) => {
 
   return {
     matricula,
-    modelo,
-    fabricante: fabricante || null,
+    modelo: modelo.trim(),
+    fabricante: fabricante ? fabricante.trim() : null,
     estado: estado || undefined,
-    observaciones: observaciones || null,
+    observaciones: observaciones ? observaciones.trim() : null,
     empresaId
   };
 };
@@ -66,6 +64,10 @@ const createAeronave = async (req, res) => {
 
     if (!isEstadoValido(req.body.estado)) {
       return res.status(400).json({ message: "El estado de la aeronave no es valido" });
+    }
+
+    if (!hasTiposOpcionalesValidos(req.body)) {
+      return res.status(400).json({ message: "El fabricante y las observaciones deben ser texto" });
     }
 
     const aeronave = await prisma.aeronave.create({
@@ -88,6 +90,10 @@ const createAeronave = async (req, res) => {
 const getAeronaves = async (req, res) => {
   try {
     const { estado } = req.query;
+
+    if (estado !== undefined && !ESTADOS_VALIDOS.includes(estado)) {
+      return res.status(400).json({ message: "El estado de la aeronave no es valido" });
+    }
 
     const aeronaves = await prisma.aeronave.findMany({
       where: getWhereEmpresa(req, estado ? { estado } : {}),
@@ -130,6 +136,10 @@ const updateAeronave = async (req, res) => {
 
     if (!isEstadoValido(req.body.estado)) {
       return res.status(400).json({ message: "El estado de la aeronave no es valido" });
+    }
+
+    if (!hasTiposOpcionalesValidos(req.body)) {
+      return res.status(400).json({ message: "El fabricante y las observaciones deben ser texto" });
     }
 
     const aeronaveActual = await prisma.aeronave.findFirst({
