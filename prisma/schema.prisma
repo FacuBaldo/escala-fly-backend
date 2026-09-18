@@ -47,10 +47,26 @@ model Campo {
   ubicacion String?
   empresaId String
   empresa   Empresa  @relation(fields: [empresaId], references: [id])
+  lotes     Lote[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([empresaId])
+}
+
+model Lote {
+  id          String                                 @id @default(uuid())
+  nombre      String
+  descripcion String?
+  superficie  Float?
+  activo      Boolean                                @default(true)
+  geometria   Unsupported("geometry(Polygon, 4326)")
+  campoId     String
+  campo       Campo                                  @relation(fields: [campoId], references: [id])
+  createdAt   DateTime                               @default(now())
+  updatedAt   DateTime                               @updatedAt
+
+  @@index([campoId])
 }
 
 model Aeronave {

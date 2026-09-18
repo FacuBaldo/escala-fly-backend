@@ -1,6 +1,6 @@
-const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
 const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
+const { esTextoNoVacio, esTextoOpcional, isForeignKeyError, isRecordNotFound } = require("../utils/validacion");
 
 const campoSelect = {
   id: true,
@@ -11,16 +11,8 @@ const campoSelect = {
   updatedAt: true
 };
 
-const hasRequiredCampoFields = ({ nombre, empresaId }) => {
-  return Boolean(nombre) && Boolean(empresaId);
-};
-
-const isRecordNotFound = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025";
-};
-
-const isForeignKeyError = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
+const hasRequiredCampoFields = ({ nombre, ubicacion, empresaId }) => {
+  return esTextoNoVacio(nombre) && esTextoNoVacio(empresaId) && esTextoOpcional(ubicacion);
 };
 
 const createCampo = async (req, res) => {
@@ -28,14 +20,14 @@ const createCampo = async (req, res) => {
     const { nombre, ubicacion } = req.body;
     const empresaId = getEmpresaIdParaEscritura(req);
 
-    if (!hasRequiredCampoFields({ nombre, empresaId })) {
+    if (!hasRequiredCampoFields({ nombre, ubicacion, empresaId })) {
       return res.status(400).json({ message: "El nombre y la empresa del campo son obligatorios" });
     }
 
     const campo = await prisma.campo.create({
       data: {
-        nombre,
-        ubicacion,
+        nombre: nombre.trim(),
+        ubicacion: ubicacion ? ubicacion.trim() : null,
         empresaId
       },
       select: campoSelect
@@ -86,7 +78,7 @@ const updateCampo = async (req, res) => {
     const { nombre, ubicacion } = req.body;
     const empresaId = getEmpresaIdParaEscritura(req);
 
-    if (!hasRequiredCampoFields({ nombre, empresaId })) {
+    if (!hasRequiredCampoFields({ nombre, ubicacion, empresaId })) {
       return res.status(400).json({ message: "El nombre y la empresa del campo son obligatorios" });
     }
 
@@ -102,8 +94,8 @@ const updateCampo = async (req, res) => {
     const campo = await prisma.campo.update({
       where: { id: campoActual.id },
       data: {
-        nombre,
-        ubicacion,
+        nombre: nombre.trim(),
+        ubicacion: ubicacion ? ubicacion.trim() : null,
         empresaId
       },
       select: campoSelect
@@ -132,12 +124,16 @@ const deleteCampo = async (req, res) => {
       return res.status(404).json({ message: "El campo no existe" });
     }
 
-    const campo = await prisma.campo.delete({
-      where: { id: campoActual.id },
-      select: campoSelect
-    });
+    // Los lotes pertenecen al campo: se eliminan junto con el en una misma transaccion
+    const [lotesEliminados, campo] = await prisma.$transaction([
+      prisma.$executeRawUnsafe(`DELETE FROM "Lote" WHERE "campoId" = $1;`, campoActual.id),
+      prisma.campo.delete({
+        where: { id: campoActual.id },
+        select: campoSelect
+      })
+    ]);
 
-    return res.json(campo);
+    return res.json({ ...campo, lotesEliminados });
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "El campo no existe" });

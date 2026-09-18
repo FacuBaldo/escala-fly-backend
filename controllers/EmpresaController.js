@@ -1,6 +1,13 @@
-const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
 const { isAdmin } = require("../utils/autorizacion");
+const {
+  esEmailValido,
+  esTextoNoVacio,
+  esTextoOpcional,
+  isForeignKeyError,
+  isRecordNotFound,
+  normalizeEmail
+} = require("../utils/validacion");
 
 const empresaSelect = {
   id: true,
@@ -11,33 +18,43 @@ const empresaSelect = {
   updatedAt: true
 };
 
-const normalizeEmail = (email) => {
-  return typeof email === "string" ? email.trim().toLowerCase() : email;
-};
+/**
+ * Valida y normaliza los datos de una empresa. Devuelve { error } o { data }.
+ */
+const getDatosEmpresa = (body) => {
+  const { nombre, email, telefono } = body;
 
-const hasRequiredEmpresaFields = ({ nombre }) => {
-  return Boolean(nombre);
-};
+  if (!esTextoNoVacio(nombre)) {
+    return { error: "El nombre de la empresa es obligatorio" };
+  }
 
-const isRecordNotFound = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025";
+  if (!esTextoOpcional(email) || !esTextoOpcional(telefono)) {
+    return { error: "El correo electronico y el telefono deben ser texto" };
+  }
+
+  if (email && !esEmailValido(email)) {
+    return { error: "El correo electronico de la empresa no es valido" };
+  }
+
+  return {
+    data: {
+      nombre: nombre.trim(),
+      email: email ? normalizeEmail(email) : null,
+      telefono: telefono ? telefono.trim() : null
+    }
+  };
 };
 
 const createEmpresa = async (req, res) => {
   try {
-    const { nombre, telefono } = req.body;
-    const email = req.body.email ? normalizeEmail(req.body.email) : null;
+    const { data, error } = getDatosEmpresa(req.body);
 
-    if (!hasRequiredEmpresaFields({ nombre })) {
-      return res.status(400).json({ message: "El nombre de la empresa es obligatorio" });
+    if (error) {
+      return res.status(400).json({ message: error });
     }
 
     const empresa = await prisma.empresa.create({
-      data: {
-        nombre,
-        email,
-        telefono
-      },
+      data,
       select: empresaSelect
     });
 
@@ -84,11 +101,10 @@ const getEmpresaById = async (req, res) => {
 
 const updateEmpresa = async (req, res) => {
   try {
-    const { nombre, telefono } = req.body;
-    const email = req.body.email ? normalizeEmail(req.body.email) : null;
+    const { data, error } = getDatosEmpresa(req.body);
 
-    if (!hasRequiredEmpresaFields({ nombre })) {
-      return res.status(400).json({ message: "El nombre de la empresa es obligatorio" });
+    if (error) {
+      return res.status(400).json({ message: error });
     }
 
     if (!isAdmin(req) && req.params.id !== req.auth.empresaId) {
@@ -97,11 +113,7 @@ const updateEmpresa = async (req, res) => {
 
     const empresa = await prisma.empresa.update({
       where: { id: isAdmin(req) ? req.params.id : req.auth.empresaId },
-      data: {
-        nombre,
-        email,
-        telefono
-      },
+      data,
       select: empresaSelect
     });
 
@@ -114,19 +126,56 @@ const updateEmpresa = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/empresas/:id (solo ADMIN)
+ * Elimina la empresa junto con todos sus datos asociados: usuarios, campos y sus lotes,
+ * productos y aeronaves. Todo se ejecuta en una transaccion: si algo falla no se borra nada.
+ */
 const deleteEmpresa = async (req, res) => {
   try {
-    const empresa = await prisma.empresa.delete({
+    const empresa = await prisma.empresa.findUnique({
       where: { id: req.params.id },
       select: empresaSelect
     });
 
-    return res.json(empresa);
+    if (!empresa) {
+      return res.status(404).json({ message: "La empresa no existe" });
+    }
+
+    const eliminados = await prisma.$transaction(async (tx) => {
+      const where = { empresaId: empresa.id };
+
+      // Los lotes dependen de los campos, por eso se eliminan primero
+      const lotes = await tx.$executeRawUnsafe(
+        `DELETE FROM "Lote" WHERE "campoId" IN (SELECT "id" FROM "Campo" WHERE "empresaId" = $1);`,
+        empresa.id
+      );
+      const campos = await tx.campo.deleteMany({ where });
+      const productos = await tx.producto.deleteMany({ where });
+      const aeronaves = await tx.aeronave.deleteMany({ where });
+      const usuarios = await tx.usuario.deleteMany({ where });
+
+      await tx.empresa.delete({ where: { id: empresa.id } });
+
+      return {
+        usuarios: usuarios.count,
+        campos: campos.count,
+        lotes,
+        productos: productos.count,
+        aeronaves: aeronaves.count
+      };
+    }, { timeout: 20000 });
+
+    return res.json({ ...empresa, eliminados });
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "La empresa no existe" });
     }
+    if (isForeignKeyError(error)) {
+      return res.status(409).json({ message: "No se pudo eliminar la empresa porque tiene datos asociados que no se pueden eliminar" });
+    }
 
+    console.error("Error al eliminar empresa:", error);
     return res.status(500).json({ message: "No se pudo eliminar la empresa" });
   }
 };

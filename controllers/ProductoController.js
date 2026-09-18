@@ -1,6 +1,14 @@
-const { Prisma } = require("@prisma/client");
 const prisma = require("../configs/prisma");
 const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
+const {
+  esTextoNoVacio,
+  esTextoOpcional,
+  esValorDeEnum,
+  isForeignKeyError,
+  isRecordNotFound
+} = require("../utils/validacion");
+
+const TIPOS_VALIDOS = ["HERBICIDA", "FUNGICIDA", "INSECTICIDA", "FERTILIZANTE", "COADYUVANTE", "OTRO"];
 
 const productoSelect = {
   id: true,
@@ -15,15 +23,22 @@ const productoSelect = {
 };
 
 const hasRequiredProductoFields = ({ nombre, tipo, unidadMedida, empresaId }) => {
-  return Boolean(nombre) && Boolean(tipo) && Boolean(unidadMedida) && Boolean(empresaId);
+  return esTextoNoVacio(nombre) && Boolean(tipo) && esTextoNoVacio(unidadMedida) && esTextoNoVacio(empresaId);
 };
 
-const isRecordNotFound = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025";
-};
+/**
+ * Valida tipos de datos y el enum del tipo de producto. Devuelve un mensaje de error o null.
+ */
+const validarProducto = ({ tipo, marca, descripcion }) => {
+  if (!esValorDeEnum(tipo, TIPOS_VALIDOS)) {
+    return "El tipo de producto no es valido";
+  }
 
-const isForeignKeyError = (error) => {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
+  if (!esTextoOpcional(marca) || !esTextoOpcional(descripcion)) {
+    return "La marca y la descripcion deben ser texto";
+  }
+
+  return null;
 };
 
 const createProducto = async (req, res) => {
@@ -37,13 +52,18 @@ const createProducto = async (req, res) => {
       });
     }
 
+    const errorValidacion = validarProducto(req.body);
+    if (errorValidacion) {
+      return res.status(400).json({ message: errorValidacion });
+    }
+
     const producto = await prisma.producto.create({
       data: {
-        nombre,
-        marca: marca || null,
+        nombre: nombre.trim(),
+        marca: marca ? marca.trim() : null,
         tipo,
-        unidadMedida,
-        descripcion: descripcion || null,
+        unidadMedida: unidadMedida.trim(),
+        descripcion: descripcion ? descripcion.trim() : null,
         empresaId
       },
       select: productoSelect
@@ -61,6 +81,10 @@ const createProducto = async (req, res) => {
 const getProductos = async (req, res) => {
   try {
     const { tipo } = req.query;
+
+    if (tipo !== undefined && !esValorDeEnum(tipo, TIPOS_VALIDOS)) {
+      return res.status(400).json({ message: "El tipo de producto no es valido" });
+    }
 
     const where = getWhereEmpresa(req);
     if (tipo) {
@@ -107,6 +131,11 @@ const updateProducto = async (req, res) => {
       });
     }
 
+    const errorValidacion = validarProducto(req.body);
+    if (errorValidacion) {
+      return res.status(400).json({ message: errorValidacion });
+    }
+
     const productoActual = await prisma.producto.findFirst({
       where: getWhereRecursoPorId(req),
       select: { id: true }
@@ -119,11 +148,11 @@ const updateProducto = async (req, res) => {
     const producto = await prisma.producto.update({
       where: { id: productoActual.id },
       data: {
-        nombre,
-        marca: marca || null,
+        nombre: nombre.trim(),
+        marca: marca ? marca.trim() : null,
         tipo,
-        unidadMedida,
-        descripcion: descripcion || null,
+        unidadMedida: unidadMedida.trim(),
+        descripcion: descripcion ? descripcion.trim() : null,
         empresaId
       },
       select: productoSelect
