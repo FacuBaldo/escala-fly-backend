@@ -140,6 +140,40 @@ const validarTopologiaGeometria = async (geometriaStr) => {
 };
 
 /**
+ * Serializa las modificaciones espaciales dentro de un campo. El bloqueo y la
+ * consulta de intersecciones deben ejecutarse en la misma transacción que la
+ * escritura para evitar que dos altas simultáneas pasen ambas la validación.
+ */
+const buscarLoteIntersectado = async (tx, campoId, geometriaStr, loteId = null) => {
+  await tx.$queryRawUnsafe(`SELECT "id" FROM "Campo" WHERE "id" = $1 FOR UPDATE;`, campoId);
+
+  const resultados = await tx.$queryRawUnsafe(
+    `WITH candidata AS (
+       SELECT CASE
+         WHEN $2::text IS NULL THEN (SELECT "geometria" FROM "Lote" WHERE "id" = $3)
+         ELSE ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)
+       END AS geometria
+     )
+     SELECT l."id", l."nombre"
+     FROM "Lote" l CROSS JOIN candidata c
+     WHERE l."campoId" = $1
+       AND ($3::text IS NULL OR l."id" <> $3)
+       AND ST_Intersects(l."geometria", c.geometria)
+     LIMIT 1;`,
+    campoId,
+    geometriaStr,
+    loteId
+  );
+
+  return resultados[0] || null;
+};
+
+const responderInterseccion = (res, lote) => res.status(409).json({
+  message: `El polígono toca o se superpone con el lote "${lote.nombre}". Los lotes de un mismo campo no pueden compartir ningún punto.`,
+  loteId: lote.id
+});
+
+/**
  * Formatea la fila del lote devuelta por Postgres, convirtiendo el texto GeoJSON en objeto.
  */
 const formatearLote = (row) => {
@@ -227,14 +261,22 @@ const createLote = async (req, res) => {
         "updatedAt";
     `;
 
-    const resultados = await prisma.$queryRawUnsafe(
-      insertQuery,
-      id,
-      nombre.trim(),
-      descripcion ? descripcion.trim() : null,
-      geometriaStr,
-      campoId
-    );
+    const { conflicto, resultados } = await prisma.$transaction(async (tx) => {
+      const conflicto = await buscarLoteIntersectado(tx, campoId, geometriaStr);
+      if (conflicto) return { conflicto };
+
+      const resultados = await tx.$queryRawUnsafe(
+        insertQuery,
+        id,
+        nombre.trim(),
+        descripcion ? descripcion.trim() : null,
+        geometriaStr,
+        campoId
+      );
+      return { resultados };
+    });
+
+    if (conflicto) return responderInterseccion(res, conflicto);
 
     const loteCreado = formatearLote(resultados[0]);
     loteCreado.campoNombre = accesoCampo.campo.nombre;
@@ -304,6 +346,8 @@ const getLotes = async (req, res) => {
         l."superficie",
         l."activo",
         ST_AsGeoJSON(l."geometria") as "geometria",
+        ST_Y(ST_PointOnSurface(l."geometria")) as "latitud",
+        ST_X(ST_PointOnSurface(l."geometria")) as "longitud",
         l."campoId",
         c."nombre" as "campoNombre",
         c."empresaId",
@@ -450,20 +494,21 @@ const updateLote = async (req, res) => {
       params.push(activo);
     }
 
+    let geometriaStrNueva = null;
     if (geometriaInput !== undefined) {
       const validacionGeo = parseAndValidateGeometria(geometriaInput);
       if (validacionGeo.error) {
         return res.status(400).json({ message: validacionGeo.error });
       }
-      const geoStr = JSON.stringify(validacionGeo.geometria);
+      geometriaStrNueva = JSON.stringify(validacionGeo.geometria);
 
-      const validacionTopologia = await validarTopologiaGeometria(geoStr);
+      const validacionTopologia = await validarTopologiaGeometria(geometriaStrNueva);
       if (validacionTopologia.error) {
         return res.status(400).json({ message: validacionTopologia.error });
       }
 
       const geoPlaceholder = `$${paramIndex++}`;
-      params.push(geoStr);
+      params.push(geometriaStrNueva);
 
       setClauses.push(`"geometria" = ST_SetSRID(ST_GeomFromGeoJSON(${geoPlaceholder}), 4326)`);
       setClauses.push(
@@ -493,7 +538,31 @@ const updateLote = async (req, res) => {
         "updatedAt";
     `;
 
-    const resultados = await prisma.$queryRawUnsafe(updateQuery, ...params);
+    const { conflicto, resultados, noEncontrado } = await prisma.$transaction(async (tx) => {
+      // Bloquear el lote antes de decidir el campo destino: otra edición podría
+      // haberlo movido mientras se validaba la solicitud.
+      const [loteBloqueado] = await tx.$queryRawUnsafe(
+        `SELECT l."campoId", c."empresaId"
+         FROM "Lote" l JOIN "Campo" c ON c."id" = l."campoId"
+         WHERE l."id" = $1 FOR UPDATE OF l;`,
+        id
+      );
+      if (!loteBloqueado || (!isAdmin(req) && loteBloqueado.empresaId !== req.auth.empresaId)) {
+        return { noEncontrado: true };
+      }
+
+      const campoDestinoId = campoId || loteBloqueado.campoId;
+      if (geometriaInput !== undefined || campoDestinoId !== loteBloqueado.campoId) {
+        const conflicto = await buscarLoteIntersectado(tx, campoDestinoId, geometriaStrNueva, id);
+        if (conflicto) return { conflicto };
+      }
+
+      const resultados = await tx.$queryRawUnsafe(updateQuery, ...params);
+      return { resultados };
+    });
+
+    if (noEncontrado) return res.status(404).json({ message: "El lote no existe" });
+    if (conflicto) return responderInterseccion(res, conflicto);
     const loteActualizado = formatearLote(resultados[0]);
 
     // Obtener datos del campo para la respuesta
