@@ -16,6 +16,8 @@ const aeronaveSelect = {
   modelo: true,
   fabricante: true,
   estado: true,
+  capacidadUtilLitros: true,
+  anchoAplicacionMetros: true,
   observaciones: true,
   empresaId: true,
   createdAt: true,
@@ -34,12 +36,25 @@ const isEstadoValido = (estado) => {
   return estado === undefined || estado === "" || ESTADOS_VALIDOS.includes(estado);
 };
 
-const hasTiposOpcionalesValidos = ({ fabricante, observaciones }) => {
-  return esTextoOpcional(fabricante) && esTextoOpcional(observaciones);
+const hasTiposOpcionalesValidos = ({ fabricante, observaciones, capacidadUtilLitros, anchoAplicacionMetros }) => {
+  const fabOk = esTextoOpcional(fabricante);
+  const obsOk = esTextoOpcional(observaciones);
+  const capOk =
+    capacidadUtilLitros === undefined ||
+    capacidadUtilLitros === null ||
+    capacidadUtilLitros === "" ||
+    (Number(capacidadUtilLitros) > 0 && Number.isFinite(Number(capacidadUtilLitros)));
+  const anchoOk =
+    anchoAplicacionMetros === undefined ||
+    anchoAplicacionMetros === null ||
+    anchoAplicacionMetros === "" ||
+    (Number(anchoAplicacionMetros) > 0 && Number.isFinite(Number(anchoAplicacionMetros)));
+
+  return fabOk && obsOk && capOk && anchoOk;
 };
 
 const buildAeronaveData = (body, empresaId) => {
-  const { modelo, fabricante, estado, observaciones } = body;
+  const { modelo, fabricante, estado, observaciones, capacidadUtilLitros, anchoAplicacionMetros } = body;
   const matricula = normalizeMatricula(body.matricula);
 
   return {
@@ -47,6 +62,14 @@ const buildAeronaveData = (body, empresaId) => {
     modelo: modelo.trim(),
     fabricante: fabricante ? fabricante.trim() : null,
     estado: estado || undefined,
+    capacidadUtilLitros:
+      capacidadUtilLitros !== undefined && capacidadUtilLitros !== null && capacidadUtilLitros !== ""
+        ? Number(capacidadUtilLitros)
+        : null,
+    anchoAplicacionMetros:
+      anchoAplicacionMetros !== undefined && anchoAplicacionMetros !== null && anchoAplicacionMetros !== ""
+        ? Number(anchoAplicacionMetros)
+        : null,
     observaciones: observaciones ? observaciones.trim() : null,
     empresaId
   };
@@ -192,6 +215,9 @@ const deleteAeronave = async (req, res) => {
   } catch (error) {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "La aeronave no existe" });
+    }
+    if (isForeignKeyError(error)) {
+      return res.status(409).json({ message: "No se puede eliminar la aeronave porque tiene órdenes de trabajo asociadas" });
     }
 
     return res.status(500).json({ message: "No se pudo eliminar la aeronave" });

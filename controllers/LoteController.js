@@ -174,15 +174,57 @@ const responderInterseccion = (res, lote) => res.status(409).json({
 });
 
 /**
- * Formatea la fila del lote devuelta por Postgres, convirtiendo el texto GeoJSON en objeto.
+ * Valida que una pista exista y pertenezca a la empresa especificada.
+ */
+const validarPistaDeEmpresa = async (pistaId, empresaId, etiqueta) => {
+  if (!pistaId) return { ok: true, pista: null };
+  const pistas = await prisma.$queryRawUnsafe(
+    `SELECT "id", "nombre", "empresaId", "activo", ST_Y("ubicacion") as "latitud", ST_X("ubicacion") as "longitud"
+     FROM "Pista" WHERE "id" = $1;`,
+    pistaId
+  );
+  if (!pistas || pistas.length === 0) {
+    return { error: `La ${etiqueta} seleccionada no existe`, status: 400 };
+  }
+  const pista = pistas[0];
+  if (pista.empresaId !== empresaId) {
+    return { error: `La ${etiqueta} no pertenece a la misma empresa del lote`, status: 403 };
+  }
+  return { ok: true, pista };
+};
+
+/**
+ * Formatea la fila del lote devuelta por Postgres, convirtiendo el texto GeoJSON en objeto
+ * y estructurando las pistas asociadas.
  */
 const formatearLote = (row) => {
   if (!row) return null;
-  return {
+  const lote = {
     ...row,
     superficie: row.superficie !== null && row.superficie !== undefined ? Number(row.superficie) : null,
-    geometria: typeof row.geometria === "string" ? JSON.parse(row.geometria) : row.geometria
+    geometria: typeof row.geometria === "string" ? JSON.parse(row.geometria) : row.geometria,
+    pistaPrincipal: row.pistaPrincipalId ? {
+      id: row.pistaPrincipalId,
+      nombre: row.pistaPrincipalNombre || undefined,
+      latitud: row.pistaPrincipalLatitud !== null && row.pistaPrincipalLatitud !== undefined ? Number(row.pistaPrincipalLatitud) : null,
+      longitud: row.pistaPrincipalLongitud !== null && row.pistaPrincipalLongitud !== undefined ? Number(row.pistaPrincipalLongitud) : null
+    } : null,
+    pistaCarga: row.pistaCargaId ? {
+      id: row.pistaCargaId,
+      nombre: row.pistaCargaNombre || undefined,
+      latitud: row.pistaCargaLatitud !== null && row.pistaCargaLatitud !== undefined ? Number(row.pistaCargaLatitud) : null,
+      longitud: row.pistaCargaLongitud !== null && row.pistaCargaLongitud !== undefined ? Number(row.pistaCargaLongitud) : null
+    } : null
   };
+
+  delete lote.pistaPrincipalNombre;
+  delete lote.pistaPrincipalLatitud;
+  delete lote.pistaPrincipalLongitud;
+  delete lote.pistaCargaNombre;
+  delete lote.pistaCargaLatitud;
+  delete lote.pistaCargaLongitud;
+
+  return lote;
 };
 
 /**
@@ -191,7 +233,7 @@ const formatearLote = (row) => {
  */
 const createLote = async (req, res) => {
   try {
-    const { nombre, descripcion, campoId, geometria: geometriaInput } = req.body;
+    const { nombre, descripcion, campoId, geometria: geometriaInput, pistaPrincipalId, pistaCargaId } = req.body;
 
     if (typeof nombre !== "string" || !nombre.trim()) {
       return res.status(400).json({ message: "El nombre del lote es obligatorio" });
@@ -209,6 +251,17 @@ const createLote = async (req, res) => {
     const accesoCampo = await verificarAccesoACampo(campoId, req);
     if (accesoCampo.error) {
       return res.status(accesoCampo.status).json({ message: accesoCampo.error });
+    }
+
+    // Validar pistas asociadas si fueron enviadas
+    if (pistaPrincipalId !== undefined && pistaPrincipalId !== null) {
+      const valPistaPrinc = await validarPistaDeEmpresa(pistaPrincipalId, accesoCampo.campo.empresaId, "pista principal");
+      if (valPistaPrinc.error) return res.status(valPistaPrinc.status).json({ message: valPistaPrinc.error });
+    }
+
+    if (pistaCargaId !== undefined && pistaCargaId !== null) {
+      const valPistaCarga = await validarPistaDeEmpresa(pistaCargaId, accesoCampo.campo.empresaId, "pista de carga");
+      if (valPistaCarga.error) return res.status(valPistaCarga.status).json({ message: valPistaCarga.error });
     }
 
     // Validar y normalizar geometría
@@ -235,6 +288,8 @@ const createLote = async (req, res) => {
         "activo",
         "geometria",
         "campoId",
+        "pistaPrincipalId",
+        "pistaCargaId",
         "createdAt",
         "updatedAt"
       )
@@ -246,6 +301,8 @@ const createLote = async (req, res) => {
         true,
         ST_SetSRID(ST_GeomFromGeoJSON($4), 4326),
         $5,
+        $6,
+        $7,
         NOW(),
         NOW()
       )
@@ -257,6 +314,8 @@ const createLote = async (req, res) => {
         "activo",
         ST_AsGeoJSON("geometria") as "geometria",
         "campoId",
+        "pistaPrincipalId",
+        "pistaCargaId",
         "createdAt",
         "updatedAt";
     `;
@@ -271,7 +330,9 @@ const createLote = async (req, res) => {
         nombre.trim(),
         descripcion ? descripcion.trim() : null,
         geometriaStr,
-        campoId
+        campoId,
+        pistaPrincipalId || null,
+        pistaCargaId || null
       );
       return { resultados };
     });
@@ -281,6 +342,36 @@ const createLote = async (req, res) => {
     const loteCreado = formatearLote(resultados[0]);
     loteCreado.campoNombre = accesoCampo.campo.nombre;
     loteCreado.empresaId = accesoCampo.campo.empresaId;
+
+    // Si se asignaron pistas, poblar sus datos para la respuesta inmediata
+    if (pistaPrincipalId) {
+      const pPrinc = await prisma.$queryRawUnsafe(
+        `SELECT "id", "nombre", ST_Y("ubicacion") as "latitud", ST_X("ubicacion") as "longitud" FROM "Pista" WHERE "id" = $1;`,
+        pistaPrincipalId
+      );
+      if (pPrinc && pPrinc[0]) {
+        loteCreado.pistaPrincipal = {
+          id: pPrinc[0].id,
+          nombre: pPrinc[0].nombre,
+          latitud: Number(pPrinc[0].latitud),
+          longitud: Number(pPrinc[0].longitud)
+        };
+      }
+    }
+    if (pistaCargaId) {
+      const pCarga = await prisma.$queryRawUnsafe(
+        `SELECT "id", "nombre", ST_Y("ubicacion") as "latitud", ST_X("ubicacion") as "longitud" FROM "Pista" WHERE "id" = $1;`,
+        pistaCargaId
+      );
+      if (pCarga && pCarga[0]) {
+        loteCreado.pistaCarga = {
+          id: pCarga[0].id,
+          nombre: pCarga[0].nombre,
+          latitud: Number(pCarga[0].latitud),
+          longitud: Number(pCarga[0].longitud)
+        };
+      }
+    }
 
     return res.status(201).json(loteCreado);
   } catch (error) {
@@ -351,10 +442,20 @@ const getLotes = async (req, res) => {
         l."campoId",
         c."nombre" as "campoNombre",
         c."empresaId",
+        l."pistaPrincipalId",
+        pp."nombre" as "pistaPrincipalNombre",
+        ST_Y(pp."ubicacion") as "pistaPrincipalLatitud",
+        ST_X(pp."ubicacion") as "pistaPrincipalLongitud",
+        l."pistaCargaId",
+        pc."nombre" as "pistaCargaNombre",
+        ST_Y(pc."ubicacion") as "pistaCargaLatitud",
+        ST_X(pc."ubicacion") as "pistaCargaLongitud",
         l."createdAt",
         l."updatedAt"
       FROM "Lote" l
       JOIN "Campo" c ON l."campoId" = c."id"
+      LEFT JOIN "Pista" pp ON l."pistaPrincipalId" = pp."id"
+      LEFT JOIN "Pista" pc ON l."pistaCargaId" = pc."id"
       ${whereClause}
       ORDER BY l."createdAt" DESC;
     `;
@@ -371,7 +472,7 @@ const getLotes = async (req, res) => {
 
 /**
  * GET /api/lotes/:id
- * Obtiene un lote por ID incluyendo su geometría en GeoJSON.
+ * Obtiene un lote por ID incluyendo su geometría en GeoJSON y sus pistas asociadas.
  */
 const getLoteById = async (req, res) => {
   try {
@@ -388,10 +489,20 @@ const getLoteById = async (req, res) => {
         l."campoId",
         c."nombre" as "campoNombre",
         c."empresaId",
+        l."pistaPrincipalId",
+        pp."nombre" as "pistaPrincipalNombre",
+        ST_Y(pp."ubicacion") as "pistaPrincipalLatitud",
+        ST_X(pp."ubicacion") as "pistaPrincipalLongitud",
+        l."pistaCargaId",
+        pc."nombre" as "pistaCargaNombre",
+        ST_Y(pc."ubicacion") as "pistaCargaLatitud",
+        ST_X(pc."ubicacion") as "pistaCargaLongitud",
         l."createdAt",
         l."updatedAt"
       FROM "Lote" l
       JOIN "Campo" c ON l."campoId" = c."id"
+      LEFT JOIN "Pista" pp ON l."pistaPrincipalId" = pp."id"
+      LEFT JOIN "Pista" pc ON l."pistaCargaId" = pc."id"
       WHERE l."id" = $1;
     `;
 
@@ -422,7 +533,7 @@ const getLoteById = async (req, res) => {
 const updateLote = async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, descripcion, campoId, geometria: geometriaInput } = req.body;
+    const { nombre, descripcion, campoId, geometria: geometriaInput, pistaPrincipalId, pistaCargaId } = req.body;
     const activo = req.body.activo === undefined ? undefined : parseBooleano(req.body.activo);
 
     if (nombre !== undefined && (typeof nombre !== "string" || !nombre.trim())) {
@@ -469,6 +580,17 @@ const updateLote = async (req, res) => {
       nuevoCampoId = campoId;
     }
 
+    // Validar pistas asociadas si fueron enviadas
+    if (pistaPrincipalId !== undefined && pistaPrincipalId !== null) {
+      const valPistaPrinc = await validarPistaDeEmpresa(pistaPrincipalId, loteActual.empresaId, "pista principal");
+      if (valPistaPrinc.error) return res.status(valPistaPrinc.status).json({ message: valPistaPrinc.error });
+    }
+
+    if (pistaCargaId !== undefined && pistaCargaId !== null) {
+      const valPistaCarga = await validarPistaDeEmpresa(pistaCargaId, loteActual.empresaId, "pista de carga");
+      if (valPistaCarga.error) return res.status(valPistaCarga.status).json({ message: valPistaCarga.error });
+    }
+
     // Armar cláusulas dinámicas de actualización
     const setClauses = [];
     const params = [];
@@ -487,6 +609,16 @@ const updateLote = async (req, res) => {
     if (campoId !== undefined) {
       setClauses.push(`"campoId" = $${paramIndex++}`);
       params.push(nuevoCampoId);
+    }
+
+    if (pistaPrincipalId !== undefined) {
+      setClauses.push(`"pistaPrincipalId" = $${paramIndex++}`);
+      params.push(pistaPrincipalId || null);
+    }
+
+    if (pistaCargaId !== undefined) {
+      setClauses.push(`"pistaCargaId" = $${paramIndex++}`);
+      params.push(pistaCargaId || null);
     }
 
     if (activo !== undefined) {
@@ -534,6 +666,8 @@ const updateLote = async (req, res) => {
         "activo",
         ST_AsGeoJSON("geometria") as "geometria",
         "campoId",
+        "pistaPrincipalId",
+        "pistaCargaId",
         "createdAt",
         "updatedAt";
     `;
@@ -573,6 +707,35 @@ const updateLote = async (req, res) => {
     if (infoCampo) {
       loteActualizado.campoNombre = infoCampo.nombre;
       loteActualizado.empresaId = infoCampo.empresaId;
+    }
+
+    if (loteActualizado.pistaPrincipalId) {
+      const pPrinc = await prisma.$queryRawUnsafe(
+        `SELECT "id", "nombre", ST_Y("ubicacion") as "latitud", ST_X("ubicacion") as "longitud" FROM "Pista" WHERE "id" = $1;`,
+        loteActualizado.pistaPrincipalId
+      );
+      if (pPrinc && pPrinc[0]) {
+        loteActualizado.pistaPrincipal = {
+          id: pPrinc[0].id,
+          nombre: pPrinc[0].nombre,
+          latitud: Number(pPrinc[0].latitud),
+          longitud: Number(pPrinc[0].longitud)
+        };
+      }
+    }
+    if (loteActualizado.pistaCargaId) {
+      const pCarga = await prisma.$queryRawUnsafe(
+        `SELECT "id", "nombre", ST_Y("ubicacion") as "latitud", ST_X("ubicacion") as "longitud" FROM "Pista" WHERE "id" = $1;`,
+        loteActualizado.pistaCargaId
+      );
+      if (pCarga && pCarga[0]) {
+        loteActualizado.pistaCarga = {
+          id: pCarga[0].id,
+          nombre: pCarga[0].nombre,
+          latitud: Number(pCarga[0].latitud),
+          longitud: Number(pCarga[0].longitud)
+        };
+      }
     }
 
     return res.json(loteActualizado);

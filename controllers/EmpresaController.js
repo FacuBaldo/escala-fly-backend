@@ -145,9 +145,14 @@ const deleteEmpresa = async (req, res) => {
     const eliminados = await prisma.$transaction(async (tx) => {
       const where = { empresaId: empresa.id };
 
-      // Los lotes dependen de los campos, por eso se eliminan primero
+      // Los lotes dependen de los campos, por eso se eliminan primero (cascada a órdenes, planes y viajes)
       const lotes = await tx.$executeRawUnsafe(
         `DELETE FROM "Lote" WHERE "campoId" IN (SELECT "id" FROM "Campo" WHERE "empresaId" = $1);`,
+        empresa.id
+      );
+      // Eliminar pistas de la empresa
+      const pistas = await tx.$executeRawUnsafe(
+        `DELETE FROM "Pista" WHERE "empresaId" = $1;`,
         empresa.id
       );
       const campos = await tx.campo.deleteMany({ where });
@@ -161,6 +166,7 @@ const deleteEmpresa = async (req, res) => {
         usuarios: usuarios.count,
         campos: campos.count,
         lotes,
+        pistas,
         productos: productos.count,
         aeronaves: aeronaves.count
       };
