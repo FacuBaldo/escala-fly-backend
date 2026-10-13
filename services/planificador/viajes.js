@@ -1,10 +1,16 @@
 /**
  * Módulo de partición de ruta en viajes según capacidad útil de caldo.
- * Corta en el punto exacto donde se agota la capacidad útil y asigna pistas:
+ * El corte se realiza SIEMPRE al finalizar una pasada completa: el piloto nunca
+ * deja una pasada a medias, aunque eso implique volver a cargar con caldo sobrante
+ * (y, en algunos casos, requiera un viaje adicional). Asignación de pistas:
  * - Viaje 1: sale de Pista Principal
  * - Viajes intermedios: van y vuelven de Pista de Carga
  * - Último viaje: vuelve a Pista Principal
  * - Viaje único: sale y vuelve a Pista Principal
+ *
+ * Excepción: si una sola pasada necesita más caldo que la capacidad útil de la
+ * aeronave, es imposible completarla en un viaje; sólo en ese caso se corta dentro
+ * de la pasada para no bloquear la planificación.
  */
 
 const { distanciaEuclidiana, localAWgs84, wgs84ALocal } = require("./proyeccion");
@@ -27,8 +33,38 @@ function interpolarPunto(p1, p2, distancia, longitudTotal) {
 }
 
 /**
- * Divide la secuencia de segmentos en viajes según la capacidad útil de caldo.
- * @param {Array<{ tipo: "APLICACION" | "ENLACE", desde: [number, number], hasta: [number, number], distancia: number }>} segmentosRuta
+ * Agrupa los segmentos consecutivos que pertenecen a la misma pasada.
+ * Cada grupo incluye el enlace de entrada a la pasada, sus tramos de aplicación
+ * y los enlaces internos (por ejemplo, al saltear un hueco del lote).
+ * @param {Array<Object>} segmentosRuta
+ * @param {number} litrosPorMetro
+ * @returns {Array<{ pasadaIndice: number, segmentos: Array<Object>, caldoLitros: number }>}
+ */
+function agruparPorPasada(segmentosRuta, litrosPorMetro) {
+  const grupos = [];
+
+  for (const seg of segmentosRuta) {
+    const ultimo = grupos[grupos.length - 1];
+
+    if (ultimo && ultimo.pasadaIndice === seg.pasadaIndice) {
+      ultimo.segmentos.push(seg);
+    } else {
+      grupos.push({ pasadaIndice: seg.pasadaIndice, segmentos: [seg] });
+    }
+  }
+
+  for (const grupo of grupos) {
+    grupo.caldoLitros = grupo.segmentos
+      .filter((seg) => seg.tipo === "APLICACION")
+      .reduce((total, seg) => total + seg.distancia * litrosPorMetro, 0);
+  }
+
+  return grupos;
+}
+
+/**
+ * Divide la secuencia de segmentos en viajes cortando sólo al terminar pasadas completas.
+ * @param {Array<{ tipo: "APLICACION" | "ENLACE", desde: [number, number], hasta: [number, number], distancia: number, pasadaIndice: number }>} segmentosRuta
  * @param {Object} config
  * @param {number} config.anchoAplicacionMetros
  * @param {number} config.litrosPorHectarea
@@ -54,29 +90,18 @@ function particionarEnViajes(segmentosRuta, config) {
   // (ancho en metros * 1 m = ancho m2; 1 ha = 10000 m2)
   const litrosPorMetro = (anchoAplicacionMetros * litrosPorHectarea) / 10000.0;
 
-  // Calcular caldo total de todos los tramos de aplicación
-  let distanciaAplicacionTotal = 0;
-  for (const seg of segmentosRuta) {
-    if (seg.tipo === "APLICACION") {
-      distanciaAplicacionTotal += seg.distancia;
-    }
-  }
-
-  const caldoTotalLote = distanciaAplicacionTotal * litrosPorMetro;
-  const cantidadViajesEstimada = Math.max(1, Math.ceil(caldoTotalLote / capacidadUtilLitros));
-
   // Coordenadas locales de las pistas
   const coordPistaPrincipalLocal = wgs84ALocal([pistaPrincipal.longitud, pistaPrincipal.latitud], origenCentroide);
   const coordPistaCargaLocal = wgs84ALocal([pistaCarga.longitud, pistaCarga.latitud], origenCentroide);
 
-  // Copia de trabajo de los segmentos para ir consumiendo
-  const colaSegmentos = segmentosRuta.map((s) => ({ ...s, restante: s.distancia }));
+  const grupos = agruparPorPasada(segmentosRuta, litrosPorMetro);
 
   const viajes = [];
-  let indiceSeg = 0;
-  let puntoPartidaSegmentoActual = null;
+  let indiceGrupo = 0;
+  // Segmentos sobrantes de una pasada que no entra entera en la tolva (caso excepcional)
+  let restoPasada = null;
 
-  while (indiceSeg < colaSegmentos.length) {
+  while (indiceGrupo < grupos.length || restoPasada) {
     const numViaje = viajes.length + 1;
     let caldoRestanteEnTolva = capacidadUtilLitros;
 
@@ -85,68 +110,117 @@ function particionarEnViajes(segmentosRuta, config) {
 
     let distanciaAplicacionViaje = 0;
     let distanciaEnlacesViaje = 0;
-
-    // Determinar pistas para este viaje
-    // Nota: Como la cantidad de viajes se conoce al terminar o estimar, asignamos dinámicamente:
-    // El viaje 1 sale de principal; posteriores salen de carga.
-    // La llegada se ajusta al verificar si es el último viaje.
-    const esPrimerViaje = numViaje === 1;
-
-    let puntoSalidaLocal = esPrimerViaje ? coordPistaPrincipalLocal : coordPistaCargaLocal;
-    caminoRecorridoViaje.push(puntoSalidaLocal);
-
     let primerPuntoLote = null;
 
-    while (indiceSeg < colaSegmentos.length && caldoRestanteEnTolva > 1e-4) {
-      const seg = colaSegmentos[indiceSeg];
-      const pDesde = puntoPartidaSegmentoActual || seg.desde;
+    const esPrimerViaje = numViaje === 1;
+    const puntoSalidaLocal = esPrimerViaje ? coordPistaPrincipalLocal : coordPistaCargaLocal;
+    caminoRecorridoViaje.push(puntoSalidaLocal);
+
+    /**
+     * Agrega un segmento al viaje en curso. Los enlaces previos al primer tramo de
+     * aplicación se descartan: el avión llega al lote desde la pista, no desde la
+     * pasada anterior.
+     */
+    const agregarSegmento = (seg, puntoDesde) => {
+      const pDesde = puntoDesde || seg.desde;
       const pHasta = seg.hasta;
-      const distDisponibleSeg = seg.restante;
+
+      if (seg.tipo === "ENLACE") {
+        if (!primerPuntoLote) return; // enlace de entrada: lo reemplaza el traslado desde la pista
+        distanciaEnlacesViaje += seg.distancia;
+        caminoRecorridoViaje.push(pHasta);
+        return;
+      }
 
       if (!primerPuntoLote) {
         primerPuntoLote = pDesde;
-        // Agregar punto de entrada al lote al recorrido
         caminoRecorridoViaje.push(pDesde);
       }
 
-      if (seg.tipo === "ENLACE") {
-        // Enlace no consume caldo
-        distanciaEnlacesViaje += distDisponibleSeg;
-        caminoRecorridoViaje.push(pHasta);
-        puntoPartidaSegmentoActual = null;
-        indiceSeg++;
-      } else {
-        // Tramo de APLICACIÓN
-        const caldoNecesario = distDisponibleSeg * litrosPorMetro;
+      const distancia = distanciaEuclidiana(pDesde, pHasta);
+      caldoRestanteEnTolva -= distancia * litrosPorMetro;
+      distanciaAplicacionViaje += distancia;
+      tramosAplicacionViaje.push([pDesde, pHasta]);
+      caminoRecorridoViaje.push(pHasta);
+    };
+
+    /**
+     * Caso excepcional: la pasada no entra entera en la tolva. Se consume lo que
+     * permita la capacidad y se devuelven los segmentos restantes para el viaje siguiente.
+     */
+    const consumirPasadaDemasiadoLarga = (segmentos) => {
+      const sobrantes = [];
+      let puntoPartida = null;
+
+      for (const seg of segmentos) {
+        if (sobrantes.length > 0) {
+          sobrantes.push(seg);
+          continue;
+        }
+
+        const pDesde = puntoPartida || seg.desde;
+        const distanciaSeg = distanciaEuclidiana(pDesde, seg.hasta);
+
+        if (seg.tipo === "ENLACE") {
+          agregarSegmento(seg, pDesde);
+          puntoPartida = null;
+          continue;
+        }
+
+        const caldoNecesario = distanciaSeg * litrosPorMetro;
 
         if (caldoNecesario <= caldoRestanteEnTolva + 1e-5) {
-          // El caldo alcanza para completar todo lo que queda de este segmento
-          caldoRestanteEnTolva -= caldoNecesario;
-          distanciaAplicacionViaje += distDisponibleSeg;
-          tramosAplicacionViaje.push([pDesde, pHasta]);
-          caminoRecorridoViaje.push(pHasta);
-
-          puntoPartidaSegmentoActual = null;
-          indiceSeg++;
-        } else {
-          // El caldo se agota EN MEDIO de este tramo: CORTE EXACTO
-          const distPosible = caldoRestanteEnTolva / litrosPorMetro;
-          const pCorte = interpolarPunto(pDesde, pHasta, distPosible, distDisponibleSeg);
-
-          distanciaAplicacionViaje += distPosible;
-          tramosAplicacionViaje.push([pDesde, pCorte]);
-          caminoRecorridoViaje.push(pCorte);
-
-          // Actualizar el segmento para el siguiente viaje
-          seg.restante = distDisponibleSeg - distPosible;
-          puntoPartidaSegmentoActual = pCorte;
-          caldoRestanteEnTolva = 0;
-          break; // Fin de este viaje por agotamiento de caldo
+          agregarSegmento(seg, pDesde);
+          puntoPartida = null;
+          continue;
         }
+
+        // El caldo se agota en medio del tramo: corte interno inevitable
+        const distPosible = Math.max(0, caldoRestanteEnTolva / litrosPorMetro);
+        const pCorte = interpolarPunto(pDesde, seg.hasta, distPosible, distanciaSeg);
+
+        if (distPosible > 0.05) {
+          agregarSegmento({ ...seg, hasta: pCorte }, pDesde);
+        }
+
+        sobrantes.push({ ...seg, desde: pCorte, distancia: distanciaEuclidiana(pCorte, seg.hasta) });
       }
+
+      return sobrantes.length > 0 ? sobrantes : null;
+    };
+
+    // 1) Terminar primero lo que haya quedado pendiente de una pasada demasiado larga
+    if (restoPasada) {
+      restoPasada = consumirPasadaDemasiadoLarga(restoPasada);
     }
 
-    // El viaje ha concluido su recorrido en lote
+    // 2) Agregar pasadas completas mientras entren enteras en la tolva
+    while (!restoPasada && indiceGrupo < grupos.length) {
+      const grupo = grupos[indiceGrupo];
+      const entraEntera = grupo.caldoLitros <= caldoRestanteEnTolva + 1e-5;
+
+      if (!entraEntera) {
+        // Si el viaje ya tiene pasadas, se cierra al final de la última completa
+        if (tramosAplicacionViaje.length > 0) break;
+
+        // La pasada sola supera la capacidad útil: corte interno inevitable
+        restoPasada = consumirPasadaDemasiadoLarga(grupo.segmentos);
+        indiceGrupo++;
+        break;
+      }
+
+      for (const seg of grupo.segmentos) {
+        agregarSegmento(seg, null);
+      }
+      indiceGrupo++;
+    }
+
+    // Si el viaje quedó sin aplicación (por ejemplo, sólo enlaces), evitar un ciclo infinito
+    if (tramosAplicacionViaje.length === 0 && !restoPasada) {
+      if (indiceGrupo >= grupos.length) break;
+      continue;
+    }
+
     const ultimoPuntoLote = caminoRecorridoViaje[caminoRecorridoViaje.length - 1];
 
     viajes.push({
@@ -248,6 +322,7 @@ function particionarEnViajes(segmentosRuta, config) {
 }
 
 module.exports = {
+  agruparPorPasada,
   interpolarPunto,
   particionarEnViajes
 };

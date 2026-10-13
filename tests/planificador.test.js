@@ -58,7 +58,9 @@ test("Planificador: genera 1 viaje cuando la capacidad de caldo es suficiente", 
 
 test("Planificador: reparte en 2 viajes cuando se requiere recarga de caldo", () => {
   // Con 10 L/ha y ~105.4 ha = ~1054 L de caldo total.
-  // Fijamos capacidad en 600 L -> debe generar 2 viajes (600 L + ~454 L).
+  // Fijamos capacidad en 600 L -> debe generar 2 viajes.
+  // El corte se hace al terminar una pasada completa, por lo que el viaje 1
+  // despega con 600 L pero aplica algo menos y regresa con el sobrante.
   const plan = generarPlanDeVuelo({
     poligonoGeoJson: poligonoRectangular,
     pistaPrincipal,
@@ -78,7 +80,8 @@ test("Planificador: reparte en 2 viajes cuando se requiere recarga de caldo", ()
   assert.equal(viaje1.pistaSalidaId, pistaPrincipal.id);
   assert.equal(viaje1.tipoLlegada, "CARGA");
   assert.equal(viaje1.pistaLlegadaId, pistaCarga.id);
-  assert.equal(viaje1.caldoLitros, 600);
+  assert.ok(viaje1.caldoLitros <= 600, "El viaje 1 no puede aplicar más caldo que la capacidad útil");
+  assert.ok(viaje1.caldoLitros > 0);
 
   // Viaje 2: sale de carga y vuelve a principal
   assert.equal(viaje2.tipoSalida, "CARGA");
@@ -87,21 +90,36 @@ test("Planificador: reparte en 2 viajes cuando se requiere recarga de caldo", ()
   assert.equal(viaje2.pistaLlegadaId, pistaPrincipal.id);
   assert.ok(viaje2.caldoLitros <= 600);
 
-  // Continuidad: el punto de corte del viaje 1 debe coincidir con el punto de inicio de aplicación del viaje 2
+  // Ninguna pasada queda partida: el viaje 2 arranca en una pasada nueva,
+  // no donde terminó el viaje 1.
   const ultimoTramoV1 = viaje1.tramosAplicacion.coordinates[viaje1.tramosAplicacion.coordinates.length - 1];
   const puntoFinAplicacionV1 = ultimoTramoV1[1];
 
   const primerTramoV2 = viaje2.tramosAplicacion.coordinates[0];
   const puntoInicioAplicacionV2 = primerTramoV2[0];
 
-  assert.ok(
-    Math.abs(puntoFinAplicacionV1[0] - puntoInicioAplicacionV2[0]) < 1e-5,
-    "El viaje 2 debe retomar en la misma longitud donde cortó el viaje 1"
+  const distanciaEntreCortes = Math.hypot(
+    puntoFinAplicacionV1[0] - puntoInicioAplicacionV2[0],
+    puntoFinAplicacionV1[1] - puntoInicioAplicacionV2[1]
   );
+
   assert.ok(
-    Math.abs(puntoFinAplicacionV1[1] - puntoInicioAplicacionV2[1]) < 1e-5,
-    "El viaje 2 debe retomar en la misma latitud donde cortó el viaje 1"
+    distanciaEntreCortes > 1e-5,
+    "El viaje 2 debe comenzar en una pasada nueva, no retomar una pasada a medias"
   );
+
+  // En un lote rectangular cada pasada es un único tramo: si no se parte ninguna,
+  // la suma de tramos de todos los viajes es igual a la cantidad de pasadas.
+  const tramosTotales = plan.viajes.reduce((total, v) => total + v.tramosAplicacion.coordinates.length, 0);
+  assert.equal(
+    tramosTotales,
+    plan.cantidadPasadas,
+    "No debe haber tramos extra: cada pasada se vuela completa en un solo viaje"
+  );
+
+  // La suma del caldo aplicado en los viajes equivale al caldo total del lote
+  const caldoSumado = plan.viajes.reduce((total, v) => total + v.caldoLitros, 0);
+  assert.ok(Math.abs(caldoSumado - plan.caldoTotalLitros) < 1, "La suma del caldo por viaje debe dar el total del lote");
 });
 
 test("Planificador: maneja 3 o más viajes con viajes intermedios en pista de carga", () => {
