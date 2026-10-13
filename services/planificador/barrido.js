@@ -107,16 +107,21 @@ function generarPasadasBarrido(anillosLocales, anguloRadianes, anchoAplicacion) 
     return [];
   }
 
-  // Determinar alturas de las pasadas distribuidas equitativamente
+  // Determinar alturas de las pasadas distribuidas equitativamente.
+  // Se usa el techo (ceil) para cubrir TODO el lote: con el piso (floor) quedaban
+  // franjas sin aplicar en los extremos. La separación real entre pasadas es menor o
+  // igual al ancho de aplicación, por lo que puede haber una leve superposición,
+  // que es lo correcto agronómicamente frente a dejar superficie sin tratar.
   const alturasY = [];
-  if (alturaTotal < anchoAplicacion) {
+  if (alturaTotal <= anchoAplicacion) {
     // Si el lote es más angosto que el ancho de pasada, hacer 1 sola pasada centrada
     alturasY.push((minY + maxY) / 2);
   } else {
-    const numPasadas = Math.max(1, Math.floor(alturaTotal / anchoAplicacion));
-    const margen = (alturaTotal - (numPasadas - 1) * anchoAplicacion) / 2;
+    const numPasadas = Math.max(1, Math.ceil(alturaTotal / anchoAplicacion));
+    const separacion = alturaTotal / numPasadas;
     for (let k = 0; k < numPasadas; k++) {
-      alturasY.push(minY + margen + k * anchoAplicacion);
+      // Centro de cada franja: la primera y la última quedan a media franja del borde
+      alturasY.push(minY + separacion * (k + 0.5));
     }
   }
 

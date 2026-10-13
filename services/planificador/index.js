@@ -46,6 +46,19 @@ function generarPlanDeVuelo(params) {
   if (!(lHa > 0)) throw new Error("Los litros por hectárea deben ser mayores a 0");
   if (!(cap > 0)) throw new Error("La capacidad útil debe ser mayor a 0 litros");
 
+  // Con una capacidad ínfima harían falta infinitos viajes para cubrir el lote.
+  // Se exige que la tolva alcance al menos para un tramo mínimo de pasada.
+  const litrosPorMetro = (ancho * lHa) / 10000.0;
+  const METROS_MINIMOS_POR_VIAJE = 50;
+
+  if (cap < litrosPorMetro * METROS_MINIMOS_POR_VIAJE) {
+    const minimoLitros = Math.ceil(litrosPorMetro * METROS_MINIMOS_POR_VIAJE);
+    throw new Error(
+      `La capacidad útil de ${cap} L es demasiado baja para un ancho de ${ancho} m y ${lHa} L/ha: ` +
+      `se necesitan al menos ${minimoLitros} L para aplicar un tramo mínimo de pasada.`
+    );
+  }
+
   // 1. Calcular centroide WGS84 para la proyección plana métrica local
   const origenCentroide = calcularCentroide(poligonoGeoJson);
 

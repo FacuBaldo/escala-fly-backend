@@ -4,6 +4,103 @@ const { getEmpresaIdParaLectura, getEmpresaIdParaEscritura, isAdmin } = require(
 const { esTextoNoVacio, esTextoOpcional } = require("../utils/validacion");
 const { generarPlanDeVuelo } = require("../services/planificador/index");
 
+// Estados por los que puede pasar una orden de trabajo
+const ESTADOS_ORDEN = ["PENDIENTE", "PLANIFICADA", "EN_EJECUCION", "FINALIZADA", "CANCELADA"];
+// Una vez finalizada o cancelada, la orden queda cerrada
+const ESTADOS_CERRADOS = ["FINALIZADA", "CANCELADA"];
+
+// La persistencia del plan puede incluir muchos viajes; se amplía el límite por defecto (5 s)
+const OPCIONES_TRANSACCION = { maxWait: 15000, timeout: 120000 };
+
+/**
+ * Convierte una fecha recibida por API. Devuelve { fecha } o { error }.
+ */
+const parsearFechaPrevista = (valor) => {
+  if (valor === undefined || valor === null || valor === "") return { fecha: null };
+
+  const fecha = new Date(valor);
+  if (Number.isNaN(fecha.getTime())) {
+    return { error: "La fecha prevista no es una fecha válida" };
+  }
+
+  return { fecha };
+};
+
+/**
+ * Valida la dosis por hectárea de un producto. Devuelve { dosis } o { error }.
+ */
+const parsearDosis = (valor, nombreProducto) => {
+  if (valor === undefined || valor === null || valor === "") return { dosis: null };
+
+  const dosis = Number(valor);
+  if (!Number.isFinite(dosis) || dosis < 0) {
+    return { error: `La dosis por hectárea de ${nombreProducto} debe ser un número mayor o igual a 0` };
+  }
+
+  return { dosis };
+};
+
+/**
+ * Inserta todos los viajes del plan en una sola sentencia para evitar
+ * decenas de viajes de ida y vuelta a la base dentro de la transacción.
+ */
+const insertarViajes = async (tx, planId, viajes) => {
+  if (!viajes || viajes.length === 0) return;
+
+  const columnasPorViaje = 16;
+  const valores = [];
+  const filas = viajes.map((v, indice) => {
+    const base = indice * columnasPorViaje;
+    const p = (desplazamiento) => `$${base + desplazamiento}`;
+
+    valores.push(
+      crypto.randomUUID(),
+      planId,
+      v.numero,
+      v.pistaSalidaId,
+      v.pistaSalidaNombre,
+      v.tipoSalida,
+      v.pistaLlegadaId,
+      v.pistaLlegadaNombre,
+      v.tipoLlegada,
+      v.caldoLitros,
+      v.superficieHa,
+      v.distanciaMetros,
+      v.distanciaAplicacionMetros,
+      v.distanciaTrasladoMetros,
+      JSON.stringify(v.recorrido),
+      JSON.stringify(v.tramosAplicacion)
+    );
+
+    return `(${p(1)}, ${p(2)}, ${p(3)}, ${p(4)}, ${p(5)}, ${p(6)}, ${p(7)}, ${p(8)}, ${p(9)}, ${p(10)}, ${p(11)}, ${p(12)}, ${p(13)}, ${p(14)},
+      ST_SetSRID(ST_GeomFromGeoJSON(${p(15)}), 4326), ST_SetSRID(ST_GeomFromGeoJSON(${p(16)}), 4326), NOW(), NOW())`;
+  });
+
+  const sql = `
+    INSERT INTO "Viaje" (
+      "id", "planId", "numero",
+      "pistaSalidaId", "pistaSalidaNombre", "tipoSalida",
+      "pistaLlegadaId", "pistaLlegadaNombre", "tipoLlegada",
+      "caldoLitros", "superficieHa",
+      "distanciaMetros", "distanciaAplicacionMetros", "distanciaTrasladoMetros",
+      "recorrido", "tramosAplicacion",
+      "createdAt", "updatedAt"
+    )
+    VALUES ${filas.join(", ")};
+  `;
+
+  await tx.$queryRawUnsafe(sql, ...valores);
+};
+
+/**
+ * Los errores de validación del planificador (capacidad insuficiente, geometría inválida)
+ * son culpa de los datos enviados, no del servidor.
+ */
+const esErrorDePlanificacion = (error) => {
+  const mensaje = error?.message || "";
+  return /capacidad útil|ancho de aplicación|litros por hectárea|polígono|pista (principal|de carga) es obligatoria|ruta válida/i.test(mensaje);
+};
+
 /**
  * Helper para validar acceso al lote y extraer su información geométrica y pistas.
  */
@@ -124,6 +221,11 @@ const createOrden = async (req, res) => {
       return res.status(400).json({ message: "Las observaciones deben ser texto" });
     }
 
+    const validacionFecha = parsearFechaPrevista(fechaPrevista);
+    if (validacionFecha.error) {
+      return res.status(400).json({ message: validacionFecha.error });
+    }
+
     const empresaIdAuth = req.auth?.empresaId;
     const esAdmin = isAdmin(req);
 
@@ -164,24 +266,37 @@ const createOrden = async (req, res) => {
         if (!prod || prod.empresaId !== empresaIdEfectiva) {
           return res.status(400).json({ message: `El producto ${item.productoId} no existe o no pertenece a la empresa` });
         }
+        const validacionDosis = parsearDosis(item.dosisPorHectarea, prod.nombre);
+        if (validacionDosis.error) {
+          return res.status(400).json({ message: validacionDosis.error });
+        }
+
         productosValidados.push({
           productoId: prod.id,
           nombre: prod.nombre,
           unidadMedida: prod.unidadMedida,
-          dosisPorHectarea: item.dosisPorHectarea !== undefined && item.dosisPorHectarea !== null ? Number(item.dosisPorHectarea) : null
+          dosisPorHectarea: validacionDosis.dosis
         });
       }
     }
 
     // 4. Calcular el plan de vuelo óptimo con el motor geométrico
-    const resultadoPlan = generarPlanDeVuelo({
-      poligonoGeoJson: lote.geometria,
-      pistaPrincipal: lote.pistaPrincipal,
-      pistaCarga: lote.pistaCarga,
-      anchoAplicacionMetros: ancho,
-      litrosPorHectarea: lHa,
-      capacidadUtilLitros: cap
-    });
+    let resultadoPlan;
+    try {
+      resultadoPlan = generarPlanDeVuelo({
+        poligonoGeoJson: lote.geometria,
+        pistaPrincipal: lote.pistaPrincipal,
+        pistaCarga: lote.pistaCarga,
+        anchoAplicacionMetros: ancho,
+        litrosPorHectarea: lHa,
+        capacidadUtilLitros: cap
+      });
+    } catch (errorPlan) {
+      if (esErrorDePlanificacion(errorPlan)) {
+        return res.status(400).json({ message: errorPlan.message });
+      }
+      throw errorPlan;
+    }
 
     const ordenId = crypto.randomUUID();
     const planId = crypto.randomUUID();
@@ -244,55 +359,9 @@ const createOrden = async (req, res) => {
         }
       });
 
-      // d. Viajes (con geometrías PostGIS)
-      for (const v of resultadoPlan.viajes) {
-        const viajeId = crypto.randomUUID();
-        const recorridoGeoJsonStr = JSON.stringify(v.recorrido);
-        const tramosGeoJsonStr = JSON.stringify(v.tramosAplicacion);
-
-        const insertViajeSql = `
-          INSERT INTO "Viaje" (
-            "id", "planId", "numero",
-            "pistaSalidaId", "pistaSalidaNombre", "tipoSalida",
-            "pistaLlegadaId", "pistaLlegadaNombre", "tipoLlegada",
-            "caldoLitros", "superficieHa",
-            "distanciaMetros", "distanciaAplicacionMetros", "distanciaTrasladoMetros",
-            "recorrido", "tramosAplicacion",
-            "createdAt", "updatedAt"
-          )
-          VALUES (
-            $1, $2, $3,
-            $4, $5, $6,
-            $7, $8, $9,
-            $10, $11,
-            $12, $13, $14,
-            ST_SetSRID(ST_GeomFromGeoJSON($15), 4326),
-            ST_SetSRID(ST_GeomFromGeoJSON($16), 4326),
-            NOW(), NOW()
-          );
-        `;
-
-        await tx.$queryRawUnsafe(
-          insertViajeSql,
-          viajeId,
-          planId,
-          v.numero,
-          v.pistaSalidaId,
-          v.pistaSalidaNombre,
-          v.tipoSalida,
-          v.pistaLlegadaId,
-          v.pistaLlegadaNombre,
-          v.tipoLlegada,
-          v.caldoLitros,
-          v.superficieHa,
-          v.distanciaMetros,
-          v.distanciaAplicacionMetros,
-          v.distanciaTrasladoMetros,
-          recorridoGeoJsonStr,
-          tramosGeoJsonStr
-        );
-      }
-    });
+      // d. Viajes (con geometrías PostGIS), en una sola sentencia
+      await insertarViajes(tx, planId, resultadoPlan.viajes);
+    }, OPCIONES_TRANSACCION);
 
     // Consultar orden completa para respuesta
     const ordenCreada = await prisma.ordenTrabajo.findUnique({
@@ -656,52 +725,9 @@ const regenerarPlanDeVueloInterno = async ({ orden, lote, ancho, lHa, cap }) => 
       });
     }
 
-    // Insertar los nuevos viajes
-    for (const v of resultadoPlan.viajes) {
-      const viajeId = crypto.randomUUID();
-      const insertViajeSql = `
-        INSERT INTO "Viaje" (
-          "id", "planId", "numero",
-          "pistaSalidaId", "pistaSalidaNombre", "tipoSalida",
-          "pistaLlegadaId", "pistaLlegadaNombre", "tipoLlegada",
-          "caldoLitros", "superficieHa",
-          "distanciaMetros", "distanciaAplicacionMetros", "distanciaTrasladoMetros",
-          "recorrido", "tramosAplicacion",
-          "createdAt", "updatedAt"
-        )
-        VALUES (
-          $1, $2, $3,
-          $4, $5, $6,
-          $7, $8, $9,
-          $10, $11,
-          $12, $13, $14,
-          ST_SetSRID(ST_GeomFromGeoJSON($15), 4326),
-          ST_SetSRID(ST_GeomFromGeoJSON($16), 4326),
-          NOW(), NOW()
-        );
-      `;
-
-      await tx.$queryRawUnsafe(
-        insertViajeSql,
-        viajeId,
-        planId,
-        v.numero,
-        v.pistaSalidaId,
-        v.pistaSalidaNombre,
-        v.tipoSalida,
-        v.pistaLlegadaId,
-        v.pistaLlegadaNombre,
-        v.tipoLlegada,
-        v.caldoLitros,
-        v.superficieHa,
-        v.distanciaMetros,
-        v.distanciaAplicacionMetros,
-        v.distanciaTrasladoMetros,
-        JSON.stringify(v.recorrido),
-        JSON.stringify(v.tramosAplicacion)
-      );
-    }
-  });
+    // Insertar los nuevos viajes en una sola sentencia
+    await insertarViajes(tx, planId, resultadoPlan.viajes);
+  }, OPCIONES_TRANSACCION);
 
   return { planId, version: nuevaVersion, resultadoPlan };
 };
@@ -720,6 +746,7 @@ const updateOrden = async (req, res) => {
       aeronaveId,
       observaciones,
       fechaPrevista,
+      estado,
       productos
     } = req.body;
 
@@ -730,6 +757,23 @@ const updateOrden = async (req, res) => {
 
     if (!ordenActual || (!isAdmin(req) && ordenActual.empresaId !== req.auth.empresaId)) {
       return res.status(404).json({ message: "La orden de trabajo no existe" });
+    }
+
+    if (ESTADOS_CERRADOS.includes(ordenActual.estado)) {
+      return res.status(409).json({
+        message: `La orden está ${ordenActual.estado.toLowerCase()} y ya no puede modificarse`
+      });
+    }
+
+    if (estado !== undefined && !ESTADOS_ORDEN.includes(estado)) {
+      return res.status(400).json({
+        message: `El estado de la orden debe ser uno de: ${ESTADOS_ORDEN.join(", ")}`
+      });
+    }
+
+    const validacionFecha = parsearFechaPrevista(fechaPrevista);
+    if (validacionFecha.error) {
+      return res.status(400).json({ message: validacionFecha.error });
     }
 
     const nuevoAncho = anchoAplicacionMetros !== undefined ? Number(anchoAplicacionMetros) : ordenActual.anchoAplicacionMetros;
@@ -761,6 +805,32 @@ const updateOrden = async (req, res) => {
       nuevaAeronaveId = aeronave.id;
     }
 
+    // Validar la lista de productos si fue enviada
+    const productosValidados = [];
+    if (Array.isArray(productos)) {
+      for (const item of productos) {
+        if (!item.productoId) {
+          return res.status(400).json({ message: "Cada producto en la mezcla debe incluir productoId" });
+        }
+
+        const prod = await prisma.producto.findUnique({
+          where: { id: item.productoId },
+          select: { id: true, nombre: true, empresaId: true }
+        });
+
+        if (!prod || prod.empresaId !== ordenActual.empresaId) {
+          return res.status(400).json({ message: `El producto ${item.productoId} no existe o no pertenece a la empresa` });
+        }
+
+        const validacionDosis = parsearDosis(item.dosisPorHectarea, prod.nombre);
+        if (validacionDosis.error) {
+          return res.status(400).json({ message: validacionDosis.error });
+        }
+
+        productosValidados.push({ productoId: prod.id, dosisPorHectarea: validacionDosis.dosis });
+      }
+    }
+
     // Obtener lote y pistas
     const datosLote = await obtenerLoteConGeometriaYPistas(ordenActual.loteId, ordenActual.empresaId, isAdmin(req));
     if (datosLote.error) {
@@ -776,36 +846,42 @@ const updateOrden = async (req, res) => {
           litrosPorHectarea: nuevoLHa,
           capacidadUtilLitros: nuevaCap,
           aeronaveId: nuevaAeronaveId,
+          estado: estado !== undefined ? estado : undefined,
           observaciones: observaciones !== undefined ? (observaciones ? observaciones.trim() : null) : undefined,
-          fechaPrevista: fechaPrevista !== undefined ? (fechaPrevista ? new Date(fechaPrevista) : null) : undefined
+          fechaPrevista: fechaPrevista !== undefined ? validacionFecha.fecha : undefined
         }
       });
 
       // Actualizar productos si se proveyó la lista
       if (Array.isArray(productos)) {
         await tx.ordenProducto.deleteMany({ where: { ordenId: id } });
-        for (const item of productos) {
-          if (item.productoId) {
-            await tx.ordenProducto.create({
-              data: {
-                ordenId: id,
-                productoId: item.productoId,
-                dosisPorHectarea: item.dosisPorHectarea ? Number(item.dosisPorHectarea) : null
-              }
-            });
-          }
+        for (const item of productosValidados) {
+          await tx.ordenProducto.create({
+            data: {
+              ordenId: id,
+              productoId: item.productoId,
+              dosisPorHectarea: item.dosisPorHectarea
+            }
+          });
         }
       }
-    });
+    }, OPCIONES_TRANSACCION);
 
     // Regenerar el plan automáticamente
-    await regenerarPlanDeVueloInterno({
-      orden: ordenActual,
-      lote: datosLote.lote,
-      ancho: nuevoAncho,
-      lHa: nuevoLHa,
-      cap: nuevaCap
-    });
+    try {
+      await regenerarPlanDeVueloInterno({
+        orden: ordenActual,
+        lote: datosLote.lote,
+        ancho: nuevoAncho,
+        lHa: nuevoLHa,
+        cap: nuevaCap
+      });
+    } catch (errorPlan) {
+      if (esErrorDePlanificacion(errorPlan)) {
+        return res.status(400).json({ message: errorPlan.message });
+      }
+      throw errorPlan;
+    }
 
     // Retornar detalle actualizado
     const ordenActualizada = await prisma.ordenTrabajo.findUnique({
@@ -852,13 +928,21 @@ const regenerarPlan = async (req, res) => {
       return res.status(datosLote.status).json({ message: datosLote.error });
     }
 
-    const { planId, version } = await regenerarPlanDeVueloInterno({
-      orden,
-      lote: datosLote.lote,
-      ancho: orden.anchoAplicacionMetros,
-      lHa: orden.litrosPorHectarea,
-      cap: orden.capacidadUtilLitros
-    });
+    let planId;
+    try {
+      ({ planId } = await regenerarPlanDeVueloInterno({
+        orden,
+        lote: datosLote.lote,
+        ancho: orden.anchoAplicacionMetros,
+        lHa: orden.litrosPorHectarea,
+        cap: orden.capacidadUtilLitros
+      }));
+    } catch (errorPlan) {
+      if (esErrorDePlanificacion(errorPlan)) {
+        return res.status(400).json({ message: errorPlan.message });
+      }
+      throw errorPlan;
+    }
 
     const planActualizado = await prisma.planVuelo.findUnique({
       where: { id: planId }
