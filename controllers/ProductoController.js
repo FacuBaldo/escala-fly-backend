@@ -191,6 +191,9 @@ const deleteProducto = async (req, res) => {
     if (isRecordNotFound(error)) {
       return res.status(404).json({ message: "El producto no existe" });
     }
+    if (isForeignKeyError(error)) {
+      return res.status(409).json({ message: "No se puede eliminar el producto porque está incluido en una o más órdenes de trabajo" });
+    }
 
     return res.status(500).json({ message: "No se pudo eliminar el producto" });
   }

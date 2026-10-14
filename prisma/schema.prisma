@@ -28,17 +28,43 @@ enum TipoProducto {
   OTRO
 }
 
+enum EstadoOrden {
+  PENDIENTE
+  PLANIFICADA
+  EN_EJECUCION
+  FINALIZADA
+  CANCELADA
+}
+
 model Empresa {
-  id        String      @id @default(uuid())
-  nombre    String
-  email     String?
-  telefono  String?
-  usuarios  Usuario[]
-  campos    Campo[]
-  productos Producto[]
-  aeronaves Aeronave[]
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  id             String         @id @default(uuid())
+  nombre         String
+  email          String?
+  telefono       String?
+  usuarios       Usuario[]
+  campos         Campo[]
+  productos      Producto[]
+  aeronaves      Aeronave[]
+  pistas         Pista[]
+  ordenesTrabajo OrdenTrabajo[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model Pista {
+  id              String                               @id @default(uuid())
+  nombre          String
+  descripcion     String?
+  activo          Boolean                              @default(true)
+  ubicacion       Unsupported("geometry(Point, 4326)")
+  empresaId       String
+  empresa         Empresa                              @relation(fields: [empresaId], references: [id])
+  lotesPrincipal  Lote[]                               @relation("LotePistaPrincipal")
+  lotesCarga      Lote[]                               @relation("LotePistaCarga")
+  createdAt       DateTime                             @default(now())
+  updatedAt       DateTime                             @updatedAt
+
+  @@index([empresaId])
 }
 
 model Campo {
@@ -55,31 +81,41 @@ model Campo {
 }
 
 model Lote {
-  id          String                                 @id @default(uuid())
-  nombre      String
-  descripcion String?
-  superficie  Float?
-  activo      Boolean                                @default(true)
-  geometria   Unsupported("geometry(Polygon, 4326)")
-  campoId     String
-  campo       Campo                                  @relation(fields: [campoId], references: [id])
-  createdAt   DateTime                               @default(now())
-  updatedAt   DateTime                               @updatedAt
+  id               String                                 @id @default(uuid())
+  nombre           String
+  descripcion      String?
+  superficie       Float?
+  activo           Boolean                                @default(true)
+  geometria        Unsupported("geometry(Polygon, 4326)")
+  campoId          String
+  campo            Campo                                  @relation(fields: [campoId], references: [id])
+  pistaPrincipalId String?
+  pistaPrincipal   Pista?                                 @relation("LotePistaPrincipal", fields: [pistaPrincipalId], references: [id])
+  pistaCargaId     String?
+  pistaCarga       Pista?                                 @relation("LotePistaCarga", fields: [pistaCargaId], references: [id])
+  ordenesTrabajo   OrdenTrabajo[]
+  createdAt        DateTime                               @default(now())
+  updatedAt        DateTime                               @updatedAt
 
   @@index([campoId])
+  @@index([pistaPrincipalId])
+  @@index([pistaCargaId])
 }
 
 model Aeronave {
-  id            String         @id @default(uuid())
-  matricula     String         @unique
-  modelo        String
-  fabricante    String?
-  estado        EstadoAeronave @default(ACTIVA)
-  observaciones String?
-  empresaId     String
-  empresa       Empresa        @relation(fields: [empresaId], references: [id])
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id                    String         @id @default(uuid())
+  matricula             String         @unique
+  modelo                String
+  fabricante            String?
+  estado                EstadoAeronave @default(ACTIVA)
+  capacidadUtilLitros   Float?
+  anchoAplicacionMetros Float?
+  observaciones         String?
+  empresaId             String
+  empresa               Empresa        @relation(fields: [empresaId], references: [id])
+  ordenesTrabajo        OrdenTrabajo[]
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   @@index([empresaId])
 }
@@ -100,16 +136,101 @@ model Usuario {
 }
 
 model Producto {
-  id           String       @id @default(uuid())
-  nombre       String
-  marca        String?
-  tipo         TipoProducto @default(HERBICIDA)
-  unidadMedida String
-  descripcion  String?
-  empresaId    String
-  empresa      Empresa      @relation(fields: [empresaId], references: [id])
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  id              String          @id @default(uuid())
+  nombre          String
+  marca           String?
+  tipo            TipoProducto    @default(HERBICIDA)
+  unidadMedida    String
+  descripcion     String?
+  empresaId       String
+  empresa         Empresa         @relation(fields: [empresaId], references: [id])
+  ordenesProducto OrdenProducto[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   @@index([empresaId])
+}
+
+model OrdenTrabajo {
+  id                    String          @id @default(uuid())
+  numero                Int             @default(autoincrement())
+  empresaId             String
+  empresa               Empresa         @relation(fields: [empresaId], references: [id])
+  loteId                String
+  lote                  Lote            @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  aeronaveId            String
+  aeronave              Aeronave        @relation(fields: [aeronaveId], references: [id])
+  anchoAplicacionMetros Float
+  litrosPorHectarea     Float
+  capacidadUtilLitros   Float
+  estado                EstadoOrden     @default(PLANIFICADA)
+  observaciones         String?
+  fechaPrevista         DateTime?
+  productos             OrdenProducto[]
+  planVuelo             PlanVuelo?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@index([empresaId])
+  @@index([loteId])
+  @@index([aeronaveId])
+}
+
+model OrdenProducto {
+  id               String       @id @default(uuid())
+  ordenId          String
+  orden            OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  productoId       String
+  producto         Producto     @relation(fields: [productoId], references: [id])
+  dosisPorHectarea Float?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([ordenId, productoId])
+  @@index([ordenId])
+  @@index([productoId])
+}
+
+model PlanVuelo {
+  id                        String       @id @default(uuid())
+  ordenId                   String       @unique
+  orden                     OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  version                   Int          @default(1)
+  orientacionGrados         Float
+  cantidadPasadas           Int
+  cantidadViajes            Int
+  superficieHa              Float
+  caldoTotalLitros          Float
+  distanciaTotalMetros      Float
+  distanciaAplicacionMetros Float
+  distanciaTrasladoMetros   Float
+  parametros                Json
+  generadoEn                DateTime     @default(now())
+  viajes                    Viaje[]
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+}
+
+model Viaje {
+  id                        String                                       @id @default(uuid())
+  planId                    String
+  plan                      PlanVuelo                                    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  numero                    Int
+  pistaSalidaId             String?
+  pistaSalidaNombre         String
+  tipoSalida                String
+  pistaLlegadaId            String?
+  pistaLlegadaNombre        String
+  tipoLlegada               String
+  caldoLitros               Float
+  superficieHa              Float
+  distanciaMetros           Float
+  distanciaAplicacionMetros Float
+  distanciaTrasladoMetros   Float
+  recorrido                 Unsupported("geometry(LineString, 4326)")
+  tramosAplicacion          Unsupported("geometry(MultiLineString, 4326)")
+  createdAt                 DateTime                                     @default(now())
+  updatedAt                 DateTime                                     @updatedAt
+
+  @@index([planId])
 }
