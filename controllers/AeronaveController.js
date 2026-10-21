@@ -18,6 +18,7 @@ const aeronaveSelect = {
   estado: true,
   capacidadUtilLitros: true,
   anchoAplicacionMetros: true,
+  radioGiroMetros: true,
   observaciones: true,
   empresaId: true,
   createdAt: true,
@@ -36,25 +37,46 @@ const isEstadoValido = (estado) => {
   return estado === undefined || estado === "" || ESTADOS_VALIDOS.includes(estado);
 };
 
-const hasTiposOpcionalesValidos = ({ fabricante, observaciones, capacidadUtilLitros, anchoAplicacionMetros }) => {
-  const fabOk = esTextoOpcional(fabricante);
-  const obsOk = esTextoOpcional(observaciones);
-  const capOk =
-    capacidadUtilLitros === undefined ||
-    capacidadUtilLitros === null ||
-    capacidadUtilLitros === "" ||
-    (Number(capacidadUtilLitros) > 0 && Number.isFinite(Number(capacidadUtilLitros)));
-  const anchoOk =
-    anchoAplicacionMetros === undefined ||
-    anchoAplicacionMetros === null ||
-    anchoAplicacionMetros === "" ||
-    (Number(anchoAplicacionMetros) > 0 && Number.isFinite(Number(anchoAplicacionMetros)));
+const estaVacio = (valor) => valor === undefined || valor === null || valor === "";
 
-  return fabOk && obsOk && capOk && anchoOk;
+const numeroOpcional = (valor) => (estaVacio(valor) ? null : Number(valor));
+
+// Radio de giro razonable para un avión agrícola: menos de 30 m o más de 1 km es un error de carga
+const RADIO_GIRO_MINIMO = 30;
+const RADIO_GIRO_MAXIMO = 1000;
+
+/**
+ * Valida los campos opcionales. Devuelve el mensaje del primer error, o null.
+ * Antes un número inválido respondía "El fabricante y las observaciones deben ser
+ * texto"; ahora cada campo dice qué tiene mal.
+ */
+const validarOpcionales = ({ fabricante, observaciones, capacidadUtilLitros, anchoAplicacionMetros, radioGiroMetros }) => {
+  if (!esTextoOpcional(fabricante) || !esTextoOpcional(observaciones)) {
+    return "El fabricante y las observaciones deben ser texto";
+  }
+
+  const positivoOpcional = (valor) => estaVacio(valor) || (Number(valor) > 0 && Number.isFinite(Number(valor)));
+
+  if (!positivoOpcional(capacidadUtilLitros)) {
+    return "La capacidad util debe ser un numero mayor a 0";
+  }
+
+  if (!positivoOpcional(anchoAplicacionMetros)) {
+    return "El ancho de aplicacion debe ser un numero mayor a 0";
+  }
+
+  if (!estaVacio(radioGiroMetros)) {
+    const radio = Number(radioGiroMetros);
+    if (!Number.isFinite(radio) || radio < RADIO_GIRO_MINIMO || radio > RADIO_GIRO_MAXIMO) {
+      return `El radio de giro debe estar entre ${RADIO_GIRO_MINIMO} y ${RADIO_GIRO_MAXIMO} metros`;
+    }
+  }
+
+  return null;
 };
 
 const buildAeronaveData = (body, empresaId) => {
-  const { modelo, fabricante, estado, observaciones, capacidadUtilLitros, anchoAplicacionMetros } = body;
+  const { modelo, fabricante, estado, observaciones, capacidadUtilLitros, anchoAplicacionMetros, radioGiroMetros } = body;
   const matricula = normalizeMatricula(body.matricula);
 
   return {
@@ -62,14 +84,9 @@ const buildAeronaveData = (body, empresaId) => {
     modelo: modelo.trim(),
     fabricante: fabricante ? fabricante.trim() : null,
     estado: estado || undefined,
-    capacidadUtilLitros:
-      capacidadUtilLitros !== undefined && capacidadUtilLitros !== null && capacidadUtilLitros !== ""
-        ? Number(capacidadUtilLitros)
-        : null,
-    anchoAplicacionMetros:
-      anchoAplicacionMetros !== undefined && anchoAplicacionMetros !== null && anchoAplicacionMetros !== ""
-        ? Number(anchoAplicacionMetros)
-        : null,
+    capacidadUtilLitros: numeroOpcional(capacidadUtilLitros),
+    anchoAplicacionMetros: numeroOpcional(anchoAplicacionMetros),
+    radioGiroMetros: numeroOpcional(radioGiroMetros),
     observaciones: observaciones ? observaciones.trim() : null,
     empresaId
   };
@@ -89,8 +106,9 @@ const createAeronave = async (req, res) => {
       return res.status(400).json({ message: "El estado de la aeronave no es valido" });
     }
 
-    if (!hasTiposOpcionalesValidos(req.body)) {
-      return res.status(400).json({ message: "El fabricante y las observaciones deben ser texto" });
+    const errorOpcionales = validarOpcionales(req.body);
+    if (errorOpcionales) {
+      return res.status(400).json({ message: errorOpcionales });
     }
 
     const aeronave = await prisma.aeronave.create({
@@ -161,8 +179,9 @@ const updateAeronave = async (req, res) => {
       return res.status(400).json({ message: "El estado de la aeronave no es valido" });
     }
 
-    if (!hasTiposOpcionalesValidos(req.body)) {
-      return res.status(400).json({ message: "El fabricante y las observaciones deben ser texto" });
+    const errorOpcionales = validarOpcionales(req.body);
+    if (errorOpcionales) {
+      return res.status(400).json({ message: errorOpcionales });
     }
 
     const aeronaveActual = await prisma.aeronave.findFirst({

@@ -20,6 +20,14 @@ enum EstadoAeronave {
 }
 
 
+// Patrón de trabajo sobre el lote (relevamiento, módulo 6). AUTOMATICO solo se usa
+// en la orden: el planificador evalúa los demás y guarda en el plan el que eligió.
+enum PatronVuelo {
+  AUTOMATICO
+  IDA_Y_VUELTA
+  REDONDO
+}
+
 enum EstadoOrden {
   PENDIENTE
   PLANIFICADA
@@ -102,6 +110,7 @@ model Aeronave {
   estado                EstadoAeronave @default(ACTIVA)
   capacidadUtilLitros   Float?
   anchoAplicacionMetros Float?
+  radioGiroMetros       Float?
   observaciones         String?
   empresaId             String
   empresa               Empresa        @relation(fields: [empresaId], references: [id])
@@ -177,6 +186,8 @@ model OrdenTrabajo {
   anchoAplicacionMetros Float
   litrosPorHectarea     Float
   capacidadUtilLitros   Float
+  radioGiroMetros       Float           @default(200)
+  patron                PatronVuelo     @default(AUTOMATICO)
   estado                EstadoOrden     @default(PLANIFICADA)
   observaciones         String?
   fechaPrevista         DateTime?
@@ -211,6 +222,7 @@ model PlanVuelo {
   orden                     OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
   version                   Int          @default(1)
   orientacionGrados         Float
+  patron                    PatronVuelo  @default(IDA_Y_VUELTA)
   cantidadPasadas           Int
   cantidadViajes            Int
   superficieHa              Float
@@ -218,6 +230,7 @@ model PlanVuelo {
   distanciaTotalMetros      Float
   distanciaAplicacionMetros Float
   distanciaTrasladoMetros   Float
+  distanciaGirosMetros      Float        @default(0)
   parametros                Json
   generadoEn                DateTime     @default(now())
   viajes                    Viaje[]

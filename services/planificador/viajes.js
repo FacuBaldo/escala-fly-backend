@@ -110,6 +110,7 @@ function particionarEnViajes(segmentosRuta, config) {
 
     let distanciaAplicacionViaje = 0;
     let distanciaEnlacesViaje = 0;
+    let distanciaGirosViaje = 0;
     let primerPuntoLote = null;
 
     const esPrimerViaje = numViaje === 1;
@@ -128,7 +129,9 @@ function particionarEnViajes(segmentosRuta, config) {
       if (seg.tipo === "ENLACE") {
         if (!primerPuntoLote) return; // enlace de entrada: lo reemplaza el traslado desde la pista
         distanciaEnlacesViaje += seg.distancia;
-        caminoRecorridoViaje.push(pHasta);
+        if (seg.esGiro) distanciaGirosViaje += seg.distancia;
+        // Los giros traen la curva completa; los saltos de hueco, solo el destino
+        caminoRecorridoViaje.push(...(seg.puntos || [pHasta]));
         return;
       }
 
@@ -229,6 +232,7 @@ function particionarEnViajes(segmentosRuta, config) {
       superficieHa: Math.round(((distanciaAplicacionViaje * anchoAplicacionMetros) / 10000.0) * 100) / 100,
       distanciaAplicacionMetros: Math.round(distanciaAplicacionViaje * 10) / 10,
       distanciaEnlacesMetros: Math.round(distanciaEnlacesViaje * 10) / 10,
+      distanciaGirosMetros: Math.round(distanciaGirosViaje * 10) / 10,
       primerPuntoLote,
       ultimoPuntoLote,
       caminoRecorridoViaje,
@@ -307,6 +311,7 @@ function particionarEnViajes(segmentosRuta, config) {
       distanciaMetros: distanciaTotalMetros,
       distanciaAplicacionMetros: v.distanciaAplicacionMetros,
       distanciaTrasladoMetros,
+      distanciaGirosMetros: v.distanciaGirosMetros,
       recorrido: {
         type: "LineString",
         coordinates: coordsRecorridoWgs84

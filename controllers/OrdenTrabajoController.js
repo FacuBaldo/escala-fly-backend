@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const prisma = require("../configs/prisma");
 const { getEmpresaIdParaLectura, getEmpresaIdParaEscritura, isAdmin } = require("../utils/autorizacion");
 const { esTextoNoVacio, esTextoOpcional } = require("../utils/validacion");
-const { generarPlanDeVuelo } = require("../services/planificador/index");
+const { PATRONES_VALIDOS, RADIO_GIRO_POR_DEFECTO, generarPlanDeVuelo } = require("../services/planificador/index");
 const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
 
 // Estados por los que puede pasar una orden de trabajo
@@ -99,7 +99,7 @@ const insertarViajes = async (tx, planId, viajes) => {
  */
 const esErrorDePlanificacion = (error) => {
   const mensaje = error?.message || "";
-  return /capacidad útil|ancho de aplicación|litros por hectárea|polígono|pista (principal|de carga) es obligatoria|ruta válida/i.test(mensaje);
+  return /capacidad útil|ancho de aplicación|litros por hectárea|radio de giro|patrón de trabajo|polígono|pista (principal|de carga) es obligatoria|ruta válida/i.test(mensaje);
 };
 
 /**
@@ -189,6 +189,8 @@ const createOrden = async (req, res) => {
       anchoAplicacionMetros,
       litrosPorHectarea,
       capacidadUtilLitros,
+      radioGiroMetros,
+      patron,
       observaciones,
       fechaPrevista,
       productos
@@ -241,7 +243,7 @@ const createOrden = async (req, res) => {
     // 2. Validar aeronave
     const aeronave = await prisma.aeronave.findUnique({
       where: { id: aeronaveId },
-      select: { id: true, matricula: true, modelo: true, estado: true, empresaId: true }
+      select: { id: true, matricula: true, modelo: true, estado: true, empresaId: true, radioGiroMetros: true }
     });
     if (!aeronave) {
       return res.status(400).json({ message: "La aeronave especificada no existe" });
@@ -280,17 +282,19 @@ const createOrden = async (req, res) => {
       }
     }
 
-    // 4. Calcular el plan de vuelo óptimo con el motor geométrico
-    let resultadoPlan;
+    // 4. Radio de giro (si no viene, el de la aeronave) y patrón de trabajo
+    const parametrosRuta = parsearParametrosRuta(
+      { radioGiroMetros, patron },
+      { radio: aeronave.radioGiroMetros ?? RADIO_GIRO_POR_DEFECTO, patron: "AUTOMATICO" }
+    );
+    if (parametrosRuta.error) {
+      return res.status(400).json({ message: parametrosRuta.error });
+    }
+
+    // 5. Calcular el plan de vuelo óptimo con el motor geométrico
+    let calculo;
     try {
-      resultadoPlan = generarPlanDeVuelo({
-        poligonoGeoJson: lote.geometria,
-        pistaPrincipal: lote.pistaPrincipal,
-        pistaCarga: lote.pistaCarga,
-        anchoAplicacionMetros: ancho,
-        litrosPorHectarea: lHa,
-        capacidadUtilLitros: cap
-      });
+      calculo = calcularPlan({ lote, ancho, lHa, cap, ...parametrosRuta });
     } catch (errorPlan) {
       if (esErrorDePlanificacion(errorPlan)) {
         return res.status(400).json({ message: errorPlan.message });
@@ -299,17 +303,6 @@ const createOrden = async (req, res) => {
     }
 
     const ordenId = crypto.randomUUID();
-    const planId = crypto.randomUUID();
-
-    const snapshotParametros = {
-      anchoAplicacionMetros: ancho,
-      litrosPorHectarea: lHa,
-      capacidadUtilLitros: cap,
-      pistaPrincipalId: lote.pistaPrincipal.id,
-      pistaCargaId: lote.pistaCarga.id,
-      pistaPrincipalCoords: [lote.pistaPrincipal.longitud, lote.pistaPrincipal.latitud],
-      pistaCargaCoords: [lote.pistaCarga.longitud, lote.pistaCarga.latitud]
-    };
 
     // 5. Persistir en transacción atómica
     await prisma.$transaction(async (tx) => {
@@ -323,6 +316,8 @@ const createOrden = async (req, res) => {
           anchoAplicacionMetros: ancho,
           litrosPorHectarea: lHa,
           capacidadUtilLitros: cap,
+          radioGiroMetros: parametrosRuta.radio,
+          patron: parametrosRuta.patron,
           estado: "PLANIFICADA",
           observaciones: observaciones ? observaciones.trim() : null,
           fechaPrevista: fechaPrevista ? new Date(fechaPrevista) : null
@@ -340,27 +335,8 @@ const createOrden = async (req, res) => {
         });
       }
 
-      // c. Plan de Vuelo
-      await tx.planVuelo.create({
-        data: {
-          id: planId,
-          ordenId,
-          version: 1,
-          orientacionGrados: resultadoPlan.orientacionGrados,
-          cantidadPasadas: resultadoPlan.cantidadPasadas,
-          cantidadViajes: resultadoPlan.cantidadViajes,
-          superficieHa: resultadoPlan.superficieHa,
-          caldoTotalLitros: resultadoPlan.caldoTotalLitros,
-          distanciaTotalMetros: resultadoPlan.distanciaTotalMetros,
-          distanciaAplicacionMetros: resultadoPlan.distanciaAplicacionMetros,
-          distanciaTrasladoMetros: resultadoPlan.distanciaTrasladoMetros,
-          parametros: snapshotParametros,
-          generadoEn: new Date()
-        }
-      });
-
-      // d. Viajes (con geometrías PostGIS), en una sola sentencia
-      await insertarViajes(tx, planId, resultadoPlan.viajes);
+      // c. Plan de vuelo y viajes
+      await guardarPlan(tx, ordenId, calculo);
     }, OPCIONES_TRANSACCION);
 
     // Consultar orden completa para respuesta
@@ -395,6 +371,8 @@ const createOrden = async (req, res) => {
             distanciaTotalMetros: true,
             distanciaAplicacionMetros: true,
             distanciaTrasladoMetros: true,
+            distanciaGirosMetros: true,
+            patron: true,
             generadoEn: true
           }
         }
@@ -473,6 +451,8 @@ const getOrdenes = async (req, res) => {
             distanciaTotalMetros: true,
             distanciaAplicacionMetros: true,
             distanciaTrasladoMetros: true,
+            distanciaGirosMetros: true,
+            patron: true,
             generadoEn: true
           }
         }
@@ -526,6 +506,8 @@ const getOrdenById = async (req, res) => {
             distanciaTotalMetros: true,
             distanciaAplicacionMetros: true,
             distanciaTrasladoMetros: true,
+            distanciaGirosMetros: true,
+            patron: true,
             generadoEn: true
           }
         }
@@ -602,7 +584,11 @@ const getPlanByOrdenId = async (req, res) => {
 
     // Obtener datos actuales del lote y pistas para verificar si el plan está desactualizado
     const datosLote = await obtenerLoteConGeometriaYPistas(orden.loteId, orden.empresaId, isAdmin(req));
+    const params = plan.parametros || {};
     let desactualizado = false;
+    // Por qué conviene regenerar: cambió el lote o sus pistas, o el plan se calculó
+    // antes de que existieran los giros reales (no tiene radio de giro en su foto)
+    let motivoDesactualizado = null;
 
     if (!datosLote.error) {
       const { lote } = datosLote;
@@ -613,13 +599,18 @@ const getPlanByOrdenId = async (req, res) => {
       const pistaCModificada = new Date(lote.pistaCarga.updatedAt).getTime() > fechaPlan;
 
       // Verificar si cambiaron las pistas asignadas respecto al snapshot guardado
-      const params = plan.parametros || {};
       const cambioPistaP = params.pistaPrincipalId && params.pistaPrincipalId !== lote.pistaPrincipal.id;
       const cambioPistaC = params.pistaCargaId && params.pistaCargaId !== lote.pistaCarga.id;
 
       if (loteModificado || pistaPModificada || pistaCModificada || cambioPistaP || cambioPistaC) {
         desactualizado = true;
+        motivoDesactualizado = "LOTE_O_PISTAS";
       }
+    }
+
+    if (!desactualizado && params.radioGiroMetros === undefined) {
+      desactualizado = true;
+      motivoDesactualizado = "MODELO_ANTERIOR";
     }
 
     return res.json({
@@ -627,6 +618,10 @@ const getPlanByOrdenId = async (req, res) => {
       ordenId: plan.ordenId,
       version: plan.version,
       orientacionGrados: plan.orientacionGrados,
+      patron: plan.patron,
+      patronSolicitado: params.patronSolicitado ?? null,
+      radioGiroMetros: params.radioGiroMetros ?? null,
+      comparacionPatrones: params.comparacionPatrones ?? null,
       cantidadPasadas: plan.cantidadPasadas,
       cantidadViajes: plan.cantidadViajes,
       superficieHa: plan.superficieHa,
@@ -634,8 +629,10 @@ const getPlanByOrdenId = async (req, res) => {
       distanciaTotalMetros: plan.distanciaTotalMetros,
       distanciaAplicacionMetros: plan.distanciaAplicacionMetros,
       distanciaTrasladoMetros: plan.distanciaTrasladoMetros,
+      distanciaGirosMetros: plan.distanciaGirosMetros,
       generadoEn: plan.generadoEn,
       desactualizado,
+      motivoDesactualizado,
       lote: datosLote.lote
         ? {
             id: datosLote.lote.id,
@@ -654,82 +651,97 @@ const getPlanByOrdenId = async (req, res) => {
   }
 };
 
+// Radio de giro razonable para un avión agrícola (mismo rango que en la aeronave)
+const RADIO_GIRO_MINIMO = 30;
+const RADIO_GIRO_MAXIMO = 1000;
+
 /**
- * Función interna para recalcular y persistir un plan de vuelo actualizado.
+ * Radio de giro y patrón con los que se calcula la ruta. Lo que no viene en el
+ * pedido se toma de `porDefecto` (los valores actuales de la orden, o los de la
+ * aeronave al crearla). Devuelve { radio, patron } o { error }.
  */
-const regenerarPlanDeVueloInterno = async ({ orden, lote, ancho, lHa, cap }) => {
+const parsearParametrosRuta = ({ radioGiroMetros, patron }, porDefecto) => {
+  const vacio = (valor) => valor === undefined || valor === null || valor === "";
+  const radio = vacio(radioGiroMetros) ? porDefecto.radio : Number(radioGiroMetros);
+
+  if (!Number.isFinite(radio) || radio < RADIO_GIRO_MINIMO || radio > RADIO_GIRO_MAXIMO) {
+    return { error: `El radio de giro debe estar entre ${RADIO_GIRO_MINIMO} y ${RADIO_GIRO_MAXIMO} metros` };
+  }
+
+  const patronElegido = vacio(patron) ? porDefecto.patron : patron;
+  if (!PATRONES_VALIDOS.includes(patronElegido)) {
+    return { error: `El patrón de trabajo debe ser uno de: ${PATRONES_VALIDOS.join(", ")}` };
+  }
+
+  return { radio, patron: patronElegido };
+};
+
+/**
+ * Calcula la ruta sin tocar la base. Se llama ANTES de guardar cualquier cambio:
+ * si los parámetros no permiten planificar, la orden no se modifica.
+ */
+const calcularPlan = ({ lote, ancho, lHa, cap, radio, patron }) => {
   const resultadoPlan = generarPlanDeVuelo({
     poligonoGeoJson: lote.geometria,
     pistaPrincipal: lote.pistaPrincipal,
     pistaCarga: lote.pistaCarga,
     anchoAplicacionMetros: ancho,
     litrosPorHectarea: lHa,
-    capacidadUtilLitros: cap
+    capacidadUtilLitros: cap,
+    radioGiroMetros: radio,
+    patron
   });
 
-  const planExistente = await prisma.planVuelo.findUnique({
-    where: { ordenId: orden.id }
-  });
-
-  const nuevaVersion = planExistente ? planExistente.version + 1 : 1;
-  const planId = planExistente ? planExistente.id : crypto.randomUUID();
-
-  const snapshotParametros = {
+  // Foto de con qué se calculó: sirve para saber si el plan quedó desactualizado
+  const parametros = {
     anchoAplicacionMetros: ancho,
     litrosPorHectarea: lHa,
     capacidadUtilLitros: cap,
+    radioGiroMetros: radio,
+    patronSolicitado: patron,
+    comparacionPatrones: resultadoPlan.comparacionPatrones,
     pistaPrincipalId: lote.pistaPrincipal.id,
     pistaCargaId: lote.pistaCarga.id,
     pistaPrincipalCoords: [lote.pistaPrincipal.longitud, lote.pistaPrincipal.latitud],
     pistaCargaCoords: [lote.pistaCarga.longitud, lote.pistaCarga.latitud]
   };
 
-  await prisma.$transaction(async (tx) => {
-    // Si ya existía el plan, eliminar los viajes anteriores
-    if (planExistente) {
-      await tx.$executeRawUnsafe(`DELETE FROM "Viaje" WHERE "planId" = $1;`, planId);
+  return { resultadoPlan, parametros };
+};
 
-      await tx.planVuelo.update({
-        where: { id: planId },
-        data: {
-          version: nuevaVersion,
-          orientacionGrados: resultadoPlan.orientacionGrados,
-          cantidadPasadas: resultadoPlan.cantidadPasadas,
-          cantidadViajes: resultadoPlan.cantidadViajes,
-          superficieHa: resultadoPlan.superficieHa,
-          caldoTotalLitros: resultadoPlan.caldoTotalLitros,
-          distanciaTotalMetros: resultadoPlan.distanciaTotalMetros,
-          distanciaAplicacionMetros: resultadoPlan.distanciaAplicacionMetros,
-          distanciaTrasladoMetros: resultadoPlan.distanciaTrasladoMetros,
-          parametros: snapshotParametros,
-          generadoEn: new Date()
-        }
-      });
-    } else {
-      await tx.planVuelo.create({
-        data: {
-          id: planId,
-          ordenId: orden.id,
-          version: nuevaVersion,
-          orientacionGrados: resultadoPlan.orientacionGrados,
-          cantidadPasadas: resultadoPlan.cantidadPasadas,
-          cantidadViajes: resultadoPlan.cantidadViajes,
-          superficieHa: resultadoPlan.superficieHa,
-          caldoTotalLitros: resultadoPlan.caldoTotalLitros,
-          distanciaTotalMetros: resultadoPlan.distanciaTotalMetros,
-          distanciaAplicacionMetros: resultadoPlan.distanciaAplicacionMetros,
-          distanciaTrasladoMetros: resultadoPlan.distanciaTrasladoMetros,
-          parametros: snapshotParametros,
-          generadoEn: new Date()
-        }
-      });
-    }
+/** Crea o reemplaza el plan de la orden y sus viajes, dentro de la transacción recibida. */
+const guardarPlan = async (tx, ordenId, { resultadoPlan, parametros }) => {
+  const planExistente = await tx.planVuelo.findUnique({ where: { ordenId } });
+  const version = planExistente ? planExistente.version + 1 : 1;
+  const planId = planExistente ? planExistente.id : crypto.randomUUID();
 
-    // Insertar los nuevos viajes en una sola sentencia
-    await insertarViajes(tx, planId, resultadoPlan.viajes);
-  }, OPCIONES_TRANSACCION);
+  const datos = {
+    version,
+    orientacionGrados: resultadoPlan.orientacionGrados,
+    patron: resultadoPlan.patron,
+    cantidadPasadas: resultadoPlan.cantidadPasadas,
+    cantidadViajes: resultadoPlan.cantidadViajes,
+    superficieHa: resultadoPlan.superficieHa,
+    caldoTotalLitros: resultadoPlan.caldoTotalLitros,
+    distanciaTotalMetros: resultadoPlan.distanciaTotalMetros,
+    distanciaAplicacionMetros: resultadoPlan.distanciaAplicacionMetros,
+    distanciaTrasladoMetros: resultadoPlan.distanciaTrasladoMetros,
+    distanciaGirosMetros: resultadoPlan.distanciaGirosMetros,
+    parametros,
+    generadoEn: new Date()
+  };
 
-  return { planId, version: nuevaVersion, resultadoPlan };
+  if (planExistente) {
+    await tx.$executeRawUnsafe(`DELETE FROM "Viaje" WHERE "planId" = $1;`, planId);
+    await tx.planVuelo.update({ where: { id: planId }, data: datos });
+  } else {
+    await tx.planVuelo.create({ data: { id: planId, ordenId, ...datos } });
+  }
+
+  // Los viajes (con geometrías PostGIS) van en una sola sentencia
+  await insertarViajes(tx, planId, resultadoPlan.viajes);
+
+  return { planId, version };
 };
 
 /**
@@ -744,6 +756,8 @@ const updateOrden = async (req, res) => {
       litrosPorHectarea,
       capacidadUtilLitros,
       aeronaveId,
+      radioGiroMetros,
+      patron,
       observaciones,
       fechaPrevista,
       estado,
@@ -789,6 +803,14 @@ const updateOrden = async (req, res) => {
     }
     if (!(nuevaCap > 0 && nuevaCap <= 20000)) {
       return res.status(400).json({ message: "La capacidad útil debe ser entre 1 y 20.000 L" });
+    }
+
+    const parametrosRuta = parsearParametrosRuta(
+      { radioGiroMetros, patron },
+      { radio: ordenActual.radioGiroMetros, patron: ordenActual.patron }
+    );
+    if (parametrosRuta.error) {
+      return res.status(400).json({ message: parametrosRuta.error });
     }
 
     if (aeronaveId && aeronaveId !== ordenActual.aeronaveId) {
@@ -837,7 +859,26 @@ const updateOrden = async (req, res) => {
       return res.status(datosLote.status).json({ message: datosLote.error });
     }
 
-    // Actualizar datos de la orden
+    // Calcular la ruta nueva antes de tocar nada: si los parámetros no permiten
+    // planificar, la orden queda como estaba (antes se guardaban igual y el plan
+    // quedaba viejo).
+    let calculo;
+    try {
+      calculo = calcularPlan({
+        lote: datosLote.lote,
+        ancho: nuevoAncho,
+        lHa: nuevoLHa,
+        cap: nuevaCap,
+        ...parametrosRuta
+      });
+    } catch (errorPlan) {
+      if (esErrorDePlanificacion(errorPlan)) {
+        return res.status(400).json({ message: errorPlan.message });
+      }
+      throw errorPlan;
+    }
+
+    // Orden, productos y plan nuevo en una sola transacción
     await prisma.$transaction(async (tx) => {
       await tx.ordenTrabajo.update({
         where: { id },
@@ -845,6 +886,8 @@ const updateOrden = async (req, res) => {
           anchoAplicacionMetros: nuevoAncho,
           litrosPorHectarea: nuevoLHa,
           capacidadUtilLitros: nuevaCap,
+          radioGiroMetros: parametrosRuta.radio,
+          patron: parametrosRuta.patron,
           aeronaveId: nuevaAeronaveId,
           estado: estado !== undefined ? estado : undefined,
           observaciones: observaciones !== undefined ? (observaciones ? observaciones.trim() : null) : undefined,
@@ -865,23 +908,9 @@ const updateOrden = async (req, res) => {
           });
         }
       }
-    }, OPCIONES_TRANSACCION);
 
-    // Regenerar el plan automáticamente
-    try {
-      await regenerarPlanDeVueloInterno({
-        orden: ordenActual,
-        lote: datosLote.lote,
-        ancho: nuevoAncho,
-        lHa: nuevoLHa,
-        cap: nuevaCap
-      });
-    } catch (errorPlan) {
-      if (esErrorDePlanificacion(errorPlan)) {
-        return res.status(400).json({ message: errorPlan.message });
-      }
-      throw errorPlan;
-    }
+      await guardarPlan(tx, id, calculo);
+    }, OPCIONES_TRANSACCION);
 
     // Retornar detalle actualizado
     const ordenActualizada = await prisma.ordenTrabajo.findUnique({
@@ -928,21 +957,24 @@ const regenerarPlan = async (req, res) => {
       return res.status(datosLote.status).json({ message: datosLote.error });
     }
 
-    let planId;
+    let calculo;
     try {
-      ({ planId } = await regenerarPlanDeVueloInterno({
-        orden,
+      calculo = calcularPlan({
         lote: datosLote.lote,
         ancho: orden.anchoAplicacionMetros,
         lHa: orden.litrosPorHectarea,
-        cap: orden.capacidadUtilLitros
-      }));
+        cap: orden.capacidadUtilLitros,
+        radio: orden.radioGiroMetros,
+        patron: orden.patron
+      });
     } catch (errorPlan) {
       if (esErrorDePlanificacion(errorPlan)) {
         return res.status(400).json({ message: errorPlan.message });
       }
       throw errorPlan;
     }
+
+    const { planId } = await prisma.$transaction((tx) => guardarPlan(tx, orden.id, calculo), OPCIONES_TRANSACCION);
 
     const planActualizado = await prisma.planVuelo.findUnique({
       where: { id: planId }
