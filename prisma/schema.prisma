@@ -19,14 +19,6 @@ enum EstadoAeronave {
   INACTIVA
 }
 
-enum TipoProducto {
-  HERBICIDA
-  FUNGICIDA
-  INSECTICIDA
-  FERTILIZANTE
-  COADYUVANTE
-  OTRO
-}
 
 enum EstadoOrden {
   PENDIENTE
@@ -139,8 +131,10 @@ model Producto {
   id              String          @id @default(uuid())
   nombre          String
   marca           String?
-  tipo            TipoProducto    @default(HERBICIDA)
-  unidadMedida    String
+  tipoId          String
+  tipo            TipoProducto    @relation(fields: [tipoId], references: [id])
+  unidadMedidaId  String
+  unidadMedida    UnidadMedida    @relation(fields: [unidadMedidaId], references: [id])
   descripcion     String?
   empresaId       String
   empresa         Empresa         @relation(fields: [empresaId], references: [id])
@@ -149,6 +143,26 @@ model Producto {
   updatedAt       DateTime        @updatedAt
 
   @@index([empresaId])
+  @@index([tipoId])
+  @@index([unidadMedidaId])
+}
+
+// Catalogos globales del sistema: los administra el ADMIN desde Configuracion
+model TipoProducto {
+  id        String     @id @default(uuid())
+  nombre    String     @unique
+  productos Producto[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model UnidadMedida {
+  id          String     @id @default(uuid())
+  nombre      String     @unique
+  abreviatura String     @unique
+  productos   Producto[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 }
 
 model OrdenTrabajo {

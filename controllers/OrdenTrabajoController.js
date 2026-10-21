@@ -3,6 +3,7 @@ const prisma = require("../configs/prisma");
 const { getEmpresaIdParaLectura, getEmpresaIdParaEscritura, isAdmin } = require("../utils/autorizacion");
 const { esTextoNoVacio, esTextoOpcional } = require("../utils/validacion");
 const { generarPlanDeVuelo } = require("../services/planificador/index");
+const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
 
 // Estados por los que puede pasar una orden de trabajo
 const ESTADOS_ORDEN = ["PENDIENTE", "PLANIFICADA", "EN_EJECUCION", "FINALIZADA", "CANCELADA"];
@@ -261,7 +262,7 @@ const createOrden = async (req, res) => {
         }
         const prod = await prisma.producto.findUnique({
           where: { id: item.productoId },
-          select: { id: true, nombre: true, empresaId: true, unidadMedida: true }
+          select: { id: true, nombre: true, empresaId: true }
         });
         if (!prod || prod.empresaId !== empresaIdEfectiva) {
           return res.status(400).json({ message: `El producto ${item.productoId} no existe o no pertenece a la empresa` });
@@ -274,7 +275,6 @@ const createOrden = async (req, res) => {
         productosValidados.push({
           productoId: prod.id,
           nombre: prod.nombre,
-          unidadMedida: prod.unidadMedida,
           dosisPorHectarea: validacionDosis.dosis
         });
       }
@@ -381,7 +381,7 @@ const createOrden = async (req, res) => {
           select: { id: true, matricula: true, modelo: true }
         },
         productos: {
-          include: { producto: { select: { id: true, nombre: true, unidadMedida: true } } }
+          include: { producto: { select: { id: true, nombre: true, unidadMedida: { select: CATALOGO_UNIDAD } } } }
         },
         planVuelo: {
           select: {
@@ -458,7 +458,7 @@ const getOrdenes = async (req, res) => {
         },
         productos: {
           include: {
-            producto: { select: { id: true, nombre: true, tipo: true, unidadMedida: true } }
+            producto: { select: { id: true, nombre: true, tipo: { select: CATALOGO_TIPO }, unidadMedida: { select: CATALOGO_UNIDAD } } }
           }
         },
         planVuelo: {
@@ -511,7 +511,7 @@ const getOrdenById = async (req, res) => {
         },
         productos: {
           include: {
-            producto: { select: { id: true, nombre: true, tipo: true, unidadMedida: true } }
+            producto: { select: { id: true, nombre: true, tipo: { select: CATALOGO_TIPO }, unidadMedida: { select: CATALOGO_UNIDAD } } }
           }
         },
         planVuelo: {
