@@ -79,7 +79,7 @@ const createProducto = async (req, res) => {
     return res.status(201).json(producto);
   } catch (error) {
     if (isForeignKeyError(error)) {
-      return res.status(400).json({ message: "La empresa asociada no existe" });
+      return res.status(400).json({ message: "La empresa, el tipo o la unidad de medida asociados no existen" });
     }
     return res.status(500).json({ message: "No se pudo crear el producto" });
   }
@@ -88,6 +88,10 @@ const createProducto = async (req, res) => {
 const getProductos = async (req, res) => {
   try {
     const { tipoId } = req.query;
+
+    if (tipoId !== undefined && typeof tipoId !== "string") {
+      return res.status(400).json({ message: "El filtro tipoId debe ser un unico id" });
+    }
 
     const where = getWhereEmpresa(req);
     if (tipoId) {
@@ -167,7 +171,7 @@ const updateProducto = async (req, res) => {
       return res.status(404).json({ message: "El producto no existe" });
     }
     if (isForeignKeyError(error)) {
-      return res.status(400).json({ message: "La empresa asociada no existe" });
+      return res.status(400).json({ message: "La empresa, el tipo o la unidad de medida asociados no existen" });
     }
     return res.status(500).json({ message: "No se pudo actualizar el producto" });
   }

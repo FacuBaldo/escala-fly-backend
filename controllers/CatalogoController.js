@@ -17,6 +17,8 @@ const { esTextoNoVacio, isForeignKeyError, isRecordNotFound, isUniqueConstraint 
  */
 const crearCatalogo = ({ modelo, campos, articulo, nombre }) => {
   const delegado = () => prisma[modelo];
+  const pronombre = articulo === "el" ? "lo" : "la";
+  const noExiste = `${articulo === "el" ? "El" : "La"} ${nombre} no existe`;
 
   const select = { id: true, createdAt: true, updatedAt: true };
   for (const campo of campos) {
@@ -39,7 +41,7 @@ const crearCatalogo = ({ modelo, campos, articulo, nombre }) => {
         return { error: `${campo.etiqueta} es ${campo.femenino ? "obligatoria" : "obligatorio"}` };
       }
 
-      const limpio = valor.trim();
+      const limpio = valor.trim().replace(/\s+/g, " ");
       if (limpio.length > campo.largoMaximo) {
         return { error: `${campo.etiqueta} no puede tener mas de ${campo.largoMaximo} caracteres` };
       }
@@ -130,7 +132,7 @@ const crearCatalogo = ({ modelo, campos, articulo, nombre }) => {
       return res.json(formatear(registro, true));
     } catch (error) {
       if (isRecordNotFound(error)) {
-        return res.status(404).json({ message: `${articulo === "el" ? "El" : "La"} ${nombre} no existe` });
+        return res.status(404).json({ message: noExiste });
       }
       if (isUniqueConstraint(error)) {
         return res.status(409).json({ message: `Ya existe ${articulo} ${nombre} con esos datos` });
@@ -147,13 +149,13 @@ const crearCatalogo = ({ modelo, campos, articulo, nombre }) => {
       });
 
       if (!registro) {
-        return res.status(404).json({ message: `${articulo === "el" ? "El" : "La"} ${nombre} no existe` });
+        return res.status(404).json({ message: noExiste });
       }
 
       const enUso = registro._count.productos;
       if (enUso > 0) {
         return res.status(409).json({
-          message: `No se puede eliminar porque ${enUso === 1 ? "lo usa 1 producto" : `lo usan ${enUso} productos`}`
+          message: `No se puede eliminar porque ${enUso === 1 ? `${pronombre} usa 1 producto` : `${pronombre} usan ${enUso} productos`}`
         });
       }
 
@@ -161,11 +163,11 @@ const crearCatalogo = ({ modelo, campos, articulo, nombre }) => {
       return res.json({ id: registro.id });
     } catch (error) {
       if (isRecordNotFound(error)) {
-        return res.status(404).json({ message: `${articulo === "el" ? "El" : "La"} ${nombre} no existe` });
+        return res.status(404).json({ message: noExiste });
       }
       // Un producto lo tomo entre la verificacion y el borrado: la base lo impide
       if (isForeignKeyError(error)) {
-        return res.status(409).json({ message: "No se puede eliminar porque lo usa al menos un producto" });
+        return res.status(409).json({ message: `No se puede eliminar porque ${pronombre} usa al menos un producto` });
       }
       return res.status(500).json({ message: `No se pudo eliminar ${articulo} ${nombre}` });
     }
