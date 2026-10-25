@@ -571,6 +571,7 @@ const getPlanByOrdenId = async (req, res) => {
 
     const viajesRows = await prisma.$queryRawUnsafe(viajesQuery, plan.id);
 
+    const params = plan.parametros || {};
     const viajesFormateados = viajesRows.map((v) => ({
       ...v,
       caldoLitros: Number(v.caldoLitros),
@@ -578,13 +579,13 @@ const getPlanByOrdenId = async (req, res) => {
       distanciaMetros: Number(v.distanciaMetros),
       distanciaAplicacionMetros: Number(v.distanciaAplicacionMetros),
       distanciaTrasladoMetros: Number(v.distanciaTrasladoMetros),
+      segmentos: params.segmentosPorViaje?.[v.numero] ?? null,
       recorrido: JSON.parse(v.recorrido),
       tramosAplicacion: JSON.parse(v.tramosAplicacion)
     }));
 
     // Obtener datos actuales del lote y pistas para verificar si el plan está desactualizado
     const datosLote = await obtenerLoteConGeometriaYPistas(orden.loteId, orden.empresaId, isAdmin(req));
-    const params = plan.parametros || {};
     let desactualizado = false;
     // Por qué conviene regenerar: cambió el lote o sus pistas, o el plan se calculó
     // antes de que existieran los giros reales (no tiene radio de giro en su foto)
@@ -700,6 +701,8 @@ const calcularPlan = ({ lote, ancho, lHa, cap, radio, patron }) => {
     radioGiroMetros: radio,
     patronSolicitado: patron,
     comparacionPatrones: resultadoPlan.comparacionPatrones,
+    // Metadatos compactos referenciados al recorrido PostGIS de cada viaje.
+    segmentosPorViaje: Object.fromEntries(resultadoPlan.viajes.map((v) => [v.numero, v.segmentos])),
     pistaPrincipalId: lote.pistaPrincipal.id,
     pistaCargaId: lote.pistaCarga.id,
     pistaPrincipalCoords: [lote.pistaPrincipal.longitud, lote.pistaPrincipal.latitud],
