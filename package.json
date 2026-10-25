@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "prestart": "npm run prisma:generate",
     "start": "node index.js",
+    "predev": "npm run prisma:generate",
     "dev": "nodemon index.js",
     "test": "node --test tests/**/*.test.js",
     "prisma:generate": "prisma generate",

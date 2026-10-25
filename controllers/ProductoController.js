@@ -1,41 +1,48 @@
 const prisma = require("../configs/prisma");
 const { getEmpresaIdParaEscritura, getWhereEmpresa, getWhereRecursoPorId } = require("../utils/autorizacion");
-const {
-  esTextoNoVacio,
-  esTextoOpcional,
-  esValorDeEnum,
-  isForeignKeyError,
-  isRecordNotFound
-} = require("../utils/validacion");
-
-const TIPOS_VALIDOS = ["HERBICIDA", "FUNGICIDA", "INSECTICIDA", "FERTILIZANTE", "COADYUVANTE", "OTRO"];
+const { esTextoNoVacio, esTextoOpcional, isForeignKeyError, isRecordNotFound } = require("../utils/validacion");
+const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
 
 const productoSelect = {
   id: true,
   nombre: true,
   marca: true,
-  tipo: true,
-  unidadMedida: true,
+  tipoId: true,
+  tipo: { select: CATALOGO_TIPO },
+  unidadMedidaId: true,
+  unidadMedida: { select: CATALOGO_UNIDAD },
   descripcion: true,
   empresaId: true,
   createdAt: true,
   updatedAt: true
 };
 
-const hasRequiredProductoFields = ({ nombre, tipo, unidadMedida, empresaId }) => {
-  return esTextoNoVacio(nombre) && Boolean(tipo) && esTextoNoVacio(unidadMedida) && esTextoNoVacio(empresaId);
+const hasRequiredProductoFields = ({ nombre, tipoId, unidadMedidaId, empresaId }) => {
+  return (
+    esTextoNoVacio(nombre) && esTextoNoVacio(tipoId) && esTextoNoVacio(unidadMedidaId) && esTextoNoVacio(empresaId)
+  );
 };
 
 /**
- * Valida tipos de datos y el enum del tipo de producto. Devuelve un mensaje de error o null.
+ * Valida tipos de datos y que el tipo y la unidad existan en los catalogos.
+ * Devuelve un mensaje de error o null.
  */
-const validarProducto = ({ tipo, marca, descripcion }) => {
-  if (!esValorDeEnum(tipo, TIPOS_VALIDOS)) {
-    return "El tipo de producto no es valido";
-  }
-
+const validarProducto = async ({ tipoId, unidadMedidaId, marca, descripcion }) => {
   if (!esTextoOpcional(marca) || !esTextoOpcional(descripcion)) {
     return "La marca y la descripcion deben ser texto";
+  }
+
+  const [tipo, unidad] = await Promise.all([
+    prisma.tipoProducto.findUnique({ where: { id: tipoId }, select: { id: true } }),
+    prisma.unidadMedida.findUnique({ where: { id: unidadMedidaId }, select: { id: true } })
+  ]);
+
+  if (!tipo) {
+    return "El tipo de producto no existe";
+  }
+
+  if (!unidad) {
+    return "La unidad de medida no existe";
   }
 
   return null;
@@ -43,16 +50,16 @@ const validarProducto = ({ tipo, marca, descripcion }) => {
 
 const createProducto = async (req, res) => {
   try {
-    const { nombre, marca, tipo, unidadMedida, descripcion } = req.body;
+    const { nombre, marca, tipoId, unidadMedidaId, descripcion } = req.body;
     const empresaId = getEmpresaIdParaEscritura(req);
 
-    if (!hasRequiredProductoFields({ nombre, tipo, unidadMedida, empresaId })) {
+    if (!hasRequiredProductoFields({ nombre, tipoId, unidadMedidaId, empresaId })) {
       return res.status(400).json({
         message: "El nombre, tipo, unidad de medida y empresa del producto son obligatorios"
       });
     }
 
-    const errorValidacion = validarProducto(req.body);
+    const errorValidacion = await validarProducto(req.body);
     if (errorValidacion) {
       return res.status(400).json({ message: errorValidacion });
     }
@@ -61,8 +68,8 @@ const createProducto = async (req, res) => {
       data: {
         nombre: nombre.trim(),
         marca: marca ? marca.trim() : null,
-        tipo,
-        unidadMedida: unidadMedida.trim(),
+        tipoId,
+        unidadMedidaId,
         descripcion: descripcion ? descripcion.trim() : null,
         empresaId
       },
@@ -72,7 +79,7 @@ const createProducto = async (req, res) => {
     return res.status(201).json(producto);
   } catch (error) {
     if (isForeignKeyError(error)) {
-      return res.status(400).json({ message: "La empresa asociada no existe" });
+      return res.status(400).json({ message: "La empresa, el tipo o la unidad de medida asociados no existen" });
     }
     return res.status(500).json({ message: "No se pudo crear el producto" });
   }
@@ -80,15 +87,15 @@ const createProducto = async (req, res) => {
 
 const getProductos = async (req, res) => {
   try {
-    const { tipo } = req.query;
+    const { tipoId } = req.query;
 
-    if (tipo !== undefined && !esValorDeEnum(tipo, TIPOS_VALIDOS)) {
-      return res.status(400).json({ message: "El tipo de producto no es valido" });
+    if (tipoId !== undefined && typeof tipoId !== "string") {
+      return res.status(400).json({ message: "El filtro tipoId debe ser un unico id" });
     }
 
     const where = getWhereEmpresa(req);
-    if (tipo) {
-      where.tipo = tipo;
+    if (tipoId) {
+      where.tipoId = tipoId;
     }
 
     const productos = await prisma.producto.findMany({
@@ -122,16 +129,16 @@ const getProductoById = async (req, res) => {
 
 const updateProducto = async (req, res) => {
   try {
-    const { nombre, marca, tipo, unidadMedida, descripcion } = req.body;
+    const { nombre, marca, tipoId, unidadMedidaId, descripcion } = req.body;
     const empresaId = getEmpresaIdParaEscritura(req);
 
-    if (!hasRequiredProductoFields({ nombre, tipo, unidadMedida, empresaId })) {
+    if (!hasRequiredProductoFields({ nombre, tipoId, unidadMedidaId, empresaId })) {
       return res.status(400).json({
         message: "El nombre, tipo, unidad de medida y empresa del producto son obligatorios"
       });
     }
 
-    const errorValidacion = validarProducto(req.body);
+    const errorValidacion = await validarProducto(req.body);
     if (errorValidacion) {
       return res.status(400).json({ message: errorValidacion });
     }
@@ -150,8 +157,8 @@ const updateProducto = async (req, res) => {
       data: {
         nombre: nombre.trim(),
         marca: marca ? marca.trim() : null,
-        tipo,
-        unidadMedida: unidadMedida.trim(),
+        tipoId,
+        unidadMedidaId,
         descripcion: descripcion ? descripcion.trim() : null,
         empresaId
       },
@@ -164,7 +171,7 @@ const updateProducto = async (req, res) => {
       return res.status(404).json({ message: "El producto no existe" });
     }
     if (isForeignKeyError(error)) {
-      return res.status(400).json({ message: "La empresa asociada no existe" });
+      return res.status(400).json({ message: "La empresa, el tipo o la unidad de medida asociados no existen" });
     }
     return res.status(500).json({ message: "No se pudo actualizar el producto" });
   }

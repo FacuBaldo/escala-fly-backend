@@ -166,14 +166,20 @@ async function runIntegrationTests() {
     assert.equal(aeroRes.data.anchoAplicacionMetros, 22);
     aeronaveId = aeroRes.data.id;
 
-    // Crear Producto
+    // Crear Producto: el tipo y la unidad se eligen de los catalogos de Configuracion
+    const tiposRes = await request("/tipos-producto", { token: adminToken });
+    const unidadesRes = await request("/unidades-medida", { token: adminToken });
+    const herbicida = tiposRes.data.find((tipo) => tipo.nombre === "Herbicida");
+    const litros = unidadesRes.data.find((unidad) => unidad.abreviatura === "L");
+    assert.ok(herbicida && litros, "Los catalogos deben traer Herbicida y Litros");
+
     const prodRes = await request("/productos", {
       method: "POST",
       token: adminToken,
       body: {
         nombre: `Herbicida Test ${testId}`,
-        tipo: "HERBICIDA",
-        unidadMedida: "Litros",
+        tipoId: herbicida.id,
+        unidadMedidaId: litros.id,
         empresaId
       }
     });

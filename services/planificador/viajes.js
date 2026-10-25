@@ -107,9 +107,11 @@ function particionarEnViajes(segmentosRuta, config) {
 
     const tramosAplicacionViaje = []; // Array de [[p1, p2], ...]
     const caminoRecorridoViaje = [];  // Array de puntos [pt, pt, ...]
+    const segmentosViaje = []; // Índices sobre recorrido: conserva actividad y orden sin duplicar geometrías
 
     let distanciaAplicacionViaje = 0;
     let distanciaEnlacesViaje = 0;
+    let distanciaGirosViaje = 0;
     let primerPuntoLote = null;
 
     const esPrimerViaje = numViaje === 1;
@@ -128,13 +130,20 @@ function particionarEnViajes(segmentosRuta, config) {
       if (seg.tipo === "ENLACE") {
         if (!primerPuntoLote) return; // enlace de entrada: lo reemplaza el traslado desde la pista
         distanciaEnlacesViaje += seg.distancia;
-        caminoRecorridoViaje.push(pHasta);
+        if (seg.esGiro) distanciaGirosViaje += seg.distancia;
+        // Los giros traen la curva completa; los saltos de hueco, solo el destino
+        const inicio = caminoRecorridoViaje.length - 1;
+        caminoRecorridoViaje.push(...(seg.puntos || [pHasta]));
+        segmentosViaje.push({ tipo: seg.esGiro ? "GIRO" : "ENLACE", inicio,
+          fin: caminoRecorridoViaje.length - 1, distanciaMetros: seg.distancia });
         return;
       }
 
       if (!primerPuntoLote) {
         primerPuntoLote = pDesde;
         caminoRecorridoViaje.push(pDesde);
+        segmentosViaje.push({ tipo: "TRASLADO", inicio: 0, fin: 1,
+          distanciaMetros: distanciaEuclidiana(puntoSalidaLocal, pDesde) });
       }
 
       const distancia = distanciaEuclidiana(pDesde, pHasta);
@@ -142,6 +151,9 @@ function particionarEnViajes(segmentosRuta, config) {
       distanciaAplicacionViaje += distancia;
       tramosAplicacionViaje.push([pDesde, pHasta]);
       caminoRecorridoViaje.push(pHasta);
+      segmentosViaje.push({ tipo: "APLICACION", inicio: caminoRecorridoViaje.length - 2,
+        fin: caminoRecorridoViaje.length - 1, pasadaIndice: seg.pasadaIndice,
+        distanciaMetros: distancia });
     };
 
     /**
@@ -229,9 +241,11 @@ function particionarEnViajes(segmentosRuta, config) {
       superficieHa: Math.round(((distanciaAplicacionViaje * anchoAplicacionMetros) / 10000.0) * 100) / 100,
       distanciaAplicacionMetros: Math.round(distanciaAplicacionViaje * 10) / 10,
       distanciaEnlacesMetros: Math.round(distanciaEnlacesViaje * 10) / 10,
+      distanciaGirosMetros: Math.round(distanciaGirosViaje * 10) / 10,
       primerPuntoLote,
       ultimoPuntoLote,
       caminoRecorridoViaje,
+      segmentosViaje,
       tramosAplicacionViaje
     });
   }
@@ -284,6 +298,8 @@ function particionarEnViajes(segmentosRuta, config) {
     // Calcular distancias de traslados (despegue hasta lote + lote hasta aterrizaje)
     const distDespegue = distanciaEuclidiana(coordSalidaLocal, v.primerPuntoLote || coordSalidaLocal);
     const distRegreso = distanciaEuclidiana(v.ultimoPuntoLote || coordLlegadaLocal, coordLlegadaLocal);
+    v.segmentosViaje.push({ tipo: "TRASLADO", inicio: v.caminoRecorridoViaje.length - 2,
+      fin: v.caminoRecorridoViaje.length - 1, distanciaMetros: distRegreso });
     const distanciaTrasladoMetros = Math.round((distDespegue + distRegreso + v.distanciaEnlacesMetros) * 10) / 10;
     const distanciaTotalMetros = Math.round((distanciaTrasladoMetros + v.distanciaAplicacionMetros) * 10) / 10;
 
@@ -307,6 +323,8 @@ function particionarEnViajes(segmentosRuta, config) {
       distanciaMetros: distanciaTotalMetros,
       distanciaAplicacionMetros: v.distanciaAplicacionMetros,
       distanciaTrasladoMetros,
+      distanciaGirosMetros: v.distanciaGirosMetros,
+      segmentos: v.segmentosViaje,
       recorrido: {
         type: "LineString",
         coordinates: coordsRecorridoWgs84

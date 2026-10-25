@@ -5,8 +5,13 @@
 const { calcularCentroide, proyectarPoligonoALocal } = require("./proyeccion");
 const { optimizarRutaVuelo } = require("./optimizador");
 
+// Radio con el que se calculan los giros si no se indica otro: un avión agrícola a
+// 180-200 km/h gira con un radio de entre 180 y 315 m según cuánto se incline.
+const RADIO_GIRO_POR_DEFECTO = 200;
+const PATRONES_VALIDOS = ["AUTOMATICO", "IDA_Y_VUELTA", "REDONDO"];
+
 /**
- * Genera el plan de vuelo óptimo con pasadas en zigzag y corte en viajes por caldo.
+ * Genera el plan de vuelo óptimo: pasadas, patrón de trabajo con giros reales y corte en viajes por caldo.
  * @param {Object} params
  * @param {Object} params.poligonoGeoJson - Geometría Polygon GeoJSON (WGS84)
  * @param {Object} params.pistaPrincipal - { id, nombre, latitud, longitud }
@@ -14,6 +19,9 @@ const { optimizarRutaVuelo } = require("./optimizador");
  * @param {number} params.anchoAplicacionMetros - Ancho de pasada en metros (> 0)
  * @param {number} params.litrosPorHectarea - Dosis de caldo por hectárea (> 0)
  * @param {number} params.capacidadUtilLitros - Capacidad útil de la tolva en litros (> 0)
+ * @param {number} [params.radioGiroMetros] - Radio de giro de la aeronave (> 0, por defecto 200 m)
+ * @param {"AUTOMATICO"|"IDA_Y_VUELTA"|"REDONDO"} [params.patron] - Patrón de trabajo; AUTOMATICO
+ *   evalúa todos y se queda con el más corto
  * @returns {Object} Plan de vuelo completo con estadísticas y viajes
  */
 function generarPlanDeVuelo(params) {
@@ -23,7 +31,9 @@ function generarPlanDeVuelo(params) {
     pistaCarga,
     anchoAplicacionMetros,
     litrosPorHectarea,
-    capacidadUtilLitros
+    capacidadUtilLitros,
+    radioGiroMetros = RADIO_GIRO_POR_DEFECTO,
+    patron = "AUTOMATICO"
   } = params;
 
   if (!poligonoGeoJson || !poligonoGeoJson.coordinates || poligonoGeoJson.coordinates.length === 0) {
@@ -45,6 +55,12 @@ function generarPlanDeVuelo(params) {
   if (!(ancho > 0)) throw new Error("El ancho de aplicación debe ser mayor a 0 metros");
   if (!(lHa > 0)) throw new Error("Los litros por hectárea deben ser mayores a 0");
   if (!(cap > 0)) throw new Error("La capacidad útil debe ser mayor a 0 litros");
+
+  const radio = Number(radioGiroMetros);
+  if (!(radio > 0)) throw new Error("El radio de giro debe ser mayor a 0 metros");
+  if (!PATRONES_VALIDOS.includes(patron)) {
+    throw new Error(`El patrón de trabajo debe ser uno de: ${PATRONES_VALIDOS.join(", ")}`);
+  }
 
   // Con una capacidad ínfima harían falta infinitos viajes para cubrir el lote.
   // Se exige que la tolva alcance al menos para un tramo mínimo de pasada.
@@ -70,6 +86,8 @@ function generarPlanDeVuelo(params) {
     anchoAplicacionMetros: ancho,
     litrosPorHectarea: lHa,
     capacidadUtilLitros: cap,
+    radioGiroMetros: radio,
+    patron,
     pistaPrincipal,
     pistaCarga,
     origenCentroide
@@ -81,6 +99,10 @@ function generarPlanDeVuelo(params) {
 
   return {
     orientacionGrados: resultado.orientacionOptimaGrados,
+    patron: resultado.patron,
+    radioGiroMetros: radio,
+    distanciaGirosMetros: resultado.distanciaGirosMetros,
+    comparacionPatrones: resultado.comparacionPatrones,
     cantidadPasadas: resultado.cantidadPasadas,
     cantidadViajes: resultado.viajes.length,
     superficieHa: resultado.superficieHa,
@@ -93,5 +115,7 @@ function generarPlanDeVuelo(params) {
 }
 
 module.exports = {
+  PATRONES_VALIDOS,
+  RADIO_GIRO_POR_DEFECTO,
   generarPlanDeVuelo
 };
