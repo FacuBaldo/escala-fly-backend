@@ -142,6 +142,13 @@ const getPistas = async (req, res) => {
       params.push(activo);
     }
 
+    const { page = '1', limit = '20', search = '' } = req.query;
+    if (typeof page !== 'string' || !/^[1-9]\d*$/.test(page) || !Number.isSafeInteger(Number(page)) || typeof limit !== 'string' || !/^[1-9]\d*$/.test(limit) || Number(limit) > 100 || !Number.isSafeInteger((Number(page) - 1) * Number(limit)) || typeof search !== 'string' || search.length > 200 || (empresaIdQuery !== undefined && typeof empresaIdQuery !== 'string')) return res.status(400).json({ message: 'Filtros o paginacion invalidos' });
+    if (search.trim()) {
+      conditions.push(`strpos(unaccent(lower(regexp_replace(trim(p."nombre"), '\\s+', ' ', 'g'))), unaccent(lower($${paramIndex++}))) > 0`);
+      params.push(search.trim().replace(/\s+/g, ' '));
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const query = `
@@ -154,11 +161,13 @@ const getPistas = async (req, res) => {
       FROM "Pista" p
       JOIN "Empresa" e ON p."empresaId" = e."id"
       ${whereClause}
-      ORDER BY p."createdAt" DESC;
+      ORDER BY p."createdAt" DESC, p."id" DESC
+      LIMIT $${paramIndex++} OFFSET $${paramIndex++};
     `;
 
+    params.push(Number(limit) + 1, (Number(page) - 1) * Number(limit));
     const pistas = await prisma.$queryRawUnsafe(query, ...params);
-    return res.json(pistas.map(formatearPista));
+    return res.json({ data: pistas.slice(0, Number(limit)).map(formatearPista), pagination: { page: Number(page), hasNextPage: pistas.length > Number(limit) } });
   } catch (error) {
     console.error("Error al obtener pistas:", error);
     return res.status(500).json({ message: "No se pudieron cargar las pistas" });

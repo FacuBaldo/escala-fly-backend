@@ -427,6 +427,13 @@ const getLotes = async (req, res) => {
       params.push(activo);
     }
 
+    const { page = '1', limit = '20', search = '' } = req.query;
+    if (typeof page !== 'string' || !/^[1-9]\d*$/.test(page) || !Number.isSafeInteger(Number(page)) || typeof limit !== 'string' || !/^[1-9]\d*$/.test(limit) || Number(limit) > 100 || !Number.isSafeInteger((Number(page) - 1) * Number(limit)) || typeof search !== 'string' || search.length > 200) return res.status(400).json({ message: 'Filtros o paginacion invalidos' });
+    if (search.trim()) {
+      conditions.push(`strpos(unaccent(lower(regexp_replace(trim(l."nombre"), '\\s+', ' ', 'g'))), unaccent(lower($${paramIndex++}))) > 0`);
+      params.push(search.trim().replace(/\s+/g, ' '));
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const query = `
@@ -457,13 +464,13 @@ const getLotes = async (req, res) => {
       LEFT JOIN "Pista" pp ON l."pistaPrincipalId" = pp."id"
       LEFT JOIN "Pista" pc ON l."pistaCargaId" = pc."id"
       ${whereClause}
-      ORDER BY l."createdAt" DESC;
+      ORDER BY l."createdAt" DESC, l."id" DESC
+      LIMIT $${paramIndex++} OFFSET $${paramIndex++};
     `;
 
+    params.push(Number(limit) + 1, (Number(page) - 1) * Number(limit));
     const lotes = await prisma.$queryRawUnsafe(query, ...params);
-    const lotesFormateados = lotes.map(formatearLote);
-
-    return res.json(lotesFormateados);
+    return res.json({ data: lotes.slice(0, Number(limit)).map(formatearLote), pagination: { page: Number(page), hasNextPage: lotes.length > Number(limit) } });
   } catch (error) {
     console.error("Error al obtener lotes:", error);
     return res.status(500).json({ message: "No se pudieron cargar los lotes" });

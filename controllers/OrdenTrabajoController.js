@@ -419,10 +419,25 @@ const getOrdenes = async (req, res) => {
       where.lote = { campoId };
     }
 
+    const { page = '1', limit = '20', search = '', aeronaveId } = req.query;
+    {
+      if (typeof page !== 'string' || !/^[1-9]\d*$/.test(page) || !Number.isSafeInteger(Number(page)) || typeof limit !== 'string' || !/^[1-9]\d*$/.test(limit) || Number(limit) > 100 || !Number.isSafeInteger((Number(page) - 1) * Number(limit)) || typeof search !== 'string' || search.length > 200 || [loteId, campoId, empresaIdQuery, aeronaveId].some((v) => v !== undefined && typeof v !== 'string') || (estado !== undefined && !['PENDIENTE', 'PLANIFICADA', 'EN_EJECUCION', 'FINALIZADA', 'CANCELADA'].includes(estado))) return res.status(400).json({ message: 'Filtros o paginacion invalidos' });
+      if (aeronaveId) where.aeronaveId = aeronaveId;
+      if (search.trim()) {
+        const texto = search.trim().replace(/^#/, '');
+        const empresaFiltro = isAdmin(req) ? empresaIdQuery || null : req.auth.empresaId;
+        const ids = await prisma.$queryRaw`SELECT o."id" FROM "OrdenTrabajo" o JOIN "Lote" l ON l."id" = o."loteId" WHERE strpos(o."numero"::text, ${texto}) > 0 AND (${empresaFiltro}::text IS NULL OR o."empresaId" = ${empresaFiltro}) AND (${loteId || null}::text IS NULL OR o."loteId" = ${loteId || null}) AND (${campoId || null}::text IS NULL OR l."campoId" = ${campoId || null}) AND (${aeronaveId || null}::text IS NULL OR o."aeronaveId" = ${aeronaveId || null}) AND (${estado || null}::text IS NULL OR o."estado"::text = ${estado || null}) ORDER BY o."createdAt" DESC, o."id" DESC LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`;
+        where.id = { in: ids.map((row) => row.id) };
+      }
+    }
+
     const ordenes = await prisma.ordenTrabajo.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: search.trim() ? 0 : (Number(page) - 1) * Number(limit),
+      take: Number(limit) + 1,
       include: {
+        empresa: { select: { id: true, nombre: true } },
         lote: {
           select: {
             id: true,
@@ -459,7 +474,7 @@ const getOrdenes = async (req, res) => {
       }
     });
 
-    return res.json(ordenes);
+    return res.json({ data: ordenes.slice(0, Number(limit)), pagination: { page: Number(page), hasNextPage: ordenes.length > Number(limit) } });
   } catch (error) {
     console.error("Error al obtener órdenes:", error);
     return res.status(500).json({ message: "No se pudieron cargar las órdenes de trabajo" });

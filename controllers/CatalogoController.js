@@ -74,12 +74,24 @@ const crearCatalogo = ({ modelo, campos, articulo, nombre }) => {
   const listar = async (req, res) => {
     try {
       const conCantidad = isAdmin(req);
+      const { page = '1', limit = '20', search = '' } = req.query;
+      if (typeof page !== 'string' || !/^[1-9]\d*$/.test(page) || !Number.isSafeInteger(Number(page)) || typeof limit !== 'string' || !/^[1-9]\d*$/.test(limit) || Number(limit) > 100 || !Number.isSafeInteger((Number(page) - 1) * Number(limit)) || typeof search !== 'string' || search.length > 200) return res.status(400).json({ message: 'Filtros o paginacion invalidos' });
+      const texto = search.trim().replace(/\s+/g, ' ');
+      let ids = null;
+      if (texto) {
+        ids = modelo === 'tipoProducto'
+          ? await prisma.$queryRaw`SELECT "id" FROM "TipoProducto" WHERE strpos(unaccent(lower(regexp_replace(trim("nombre"), '\\s+', ' ', 'g'))), unaccent(lower(${texto}))) > 0 ORDER BY "nombre", "id" LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`
+          : await prisma.$queryRaw`SELECT "id" FROM "UnidadMedida" WHERE strpos(unaccent(lower(regexp_replace(trim("nombre"), '\\s+', ' ', 'g'))), unaccent(lower(${texto}))) > 0 OR strpos(unaccent(lower("abreviatura")), unaccent(lower(${texto}))) > 0 ORDER BY "nombre", "id" LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`;
+      }
       const registros = await delegado().findMany({
+        where: ids ? { id: { in: ids.map((row) => row.id) } } : undefined,
         select: conCantidad ? { ...select, _count: { select: { productos: true } } } : select,
-        orderBy: { [campos[0].clave]: "asc" }
+        orderBy: [{ [campos[0].clave]: "asc" }, { id: 'asc' }],
+        skip: ids ? 0 : (Number(page) - 1) * Number(limit),
+        take: Number(limit) + 1
       });
 
-      return res.json(registros.map((registro) => formatear(registro, conCantidad)));
+      return res.json({ data: registros.slice(0, Number(limit)).map((registro) => formatear(registro, conCantidad)), pagination: { page: Number(page), hasNextPage: registros.length > Number(limit) } });
     } catch (error) {
       return res.status(500).json({ message: `No se pudo cargar el listado de ${nombre}` });
     }

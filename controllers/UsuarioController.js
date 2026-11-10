@@ -146,13 +146,29 @@ const createUsuario = async (req, res) => {
 
 const getUsuarios = async (req, res) => {
   try {
-    const usuarios = await prisma.usuario.findMany({
-      where: isAdmin(req) ? undefined : { empresaId: req.auth.empresaId },
-      select: usuarioSelect,
-      orderBy: { createdAt: "desc" }
-    });
-
-    return res.json(usuarios);
+    {
+      const { page = '1', limit = '20', search = '', empresaId, rol } = req.query;
+      if (typeof page !== 'string' || !/^[1-9]\d*$/.test(page) || !Number.isSafeInteger(Number(page)) ||
+          typeof limit !== 'string' || !/^[1-9]\d*$/.test(limit) || Number(limit) > 100 ||
+          !Number.isSafeInteger((Number(page) - 1) * Number(limit)) || typeof search !== 'string' || search.length > 200 ||
+          (empresaId !== undefined && typeof empresaId !== 'string') ||
+          (rol !== undefined && !Object.values(ROLES).includes(rol))) {
+        return res.status(400).json({ message: 'Filtros o paginacion invalidos' });
+      }
+      const texto = search.trim().replace(/\s+/g, ' ');
+      const empresaFiltro = isAdmin(req) ? empresaId || null : req.auth.empresaId;
+      const ids = await prisma.$queryRaw`
+        SELECT "id" FROM "Usuario" WHERE strpos(unaccent(lower(regexp_replace(trim("nombre" || ' ' || "apellido"), '\\s+', ' ', 'g'))), unaccent(lower(${texto}))) > 0
+          AND (${empresaFiltro}::text IS NULL OR "empresaId" = ${empresaFiltro})
+          AND (${rol || null}::text IS NULL OR "rol"::text = ${rol || null})
+        ORDER BY "createdAt" DESC, "id" DESC LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`;
+      const where = {
+        ...(isAdmin(req) ? (empresaId ? { empresaId } : {}) : { empresaId: req.auth.empresaId }),
+        ...(rol ? { rol } : {}), id: { in: ids.map((row) => row.id) }
+      };
+      const usuarios = await prisma.usuario.findMany({ where, select: { ...usuarioSelect, empresa: { select: { id: true, nombre: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      return res.json({ data: usuarios.slice(0, Number(limit)), pagination: { page: Number(page), hasNextPage: ids.length > Number(limit) } });
+    }
   } catch (error) {
     return res.status(500).json({ message: "No se pudieron cargar los usuarios" });
   }

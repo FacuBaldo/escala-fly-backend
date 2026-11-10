@@ -66,13 +66,36 @@ const createEmpresa = async (req, res) => {
 
 const getEmpresas = async (req, res) => {
   try {
-    const empresas = await prisma.empresa.findMany({
-      where: isAdmin(req) ? undefined : { id: req.auth.empresaId },
-      select: empresaSelect,
-      orderBy: { createdAt: "desc" }
-    });
+    {
+      const { page = "1", limit = "20", search = "" } = req.query;
+      if (typeof page !== "string" || !/^[1-9]\d*$/.test(page) ||
+          typeof limit !== "string" || !/^[1-9]\d*$/.test(limit) ||
+          !Number.isSafeInteger(Number(page)) || Number(limit) > 100 ||
+          !Number.isSafeInteger((Number(page) - 1) * Number(limit)) ||
+          typeof search !== "string" || search.length > 200) {
+        return res.status(400).json({ message: "Los parametros de busqueda o paginacion no son validos" });
+      }
 
-    return res.json(empresas);
+      const texto = search.trim().replace(/\s+/g, " ");
+      const ids = await prisma.$queryRaw`
+        SELECT e."id" FROM "Empresa" e
+        WHERE (${isAdmin(req)} OR e."id" = ${req.auth.empresaId})
+          AND strpos(
+            unaccent(lower(regexp_replace(trim(e."nombre"), '\\s+', ' ', 'g'))),
+            unaccent(lower(${texto}))
+          ) > 0
+        ORDER BY e."createdAt" DESC, e."id" DESC
+        LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}
+      `;
+      const hasNextPage = ids.length > Number(limit);
+      const paginaIds = ids.slice(0, Number(limit)).map((empresa) => empresa.id);
+      const empresas = await prisma.empresa.findMany({
+        where: { id: { in: paginaIds }, ...(isAdmin(req) ? {} : { id: { in: paginaIds, equals: req.auth.empresaId } }) },
+        select: empresaSelect
+      });
+      const porId = new Map(empresas.map((empresa) => [empresa.id, empresa]));
+      return res.json({ data: paginaIds.map((id) => porId.get(id)).filter(Boolean), pagination: { page: Number(page), hasNextPage } });
+    }
   } catch (error) {
     return res.status(500).json({ message: "No se pudieron cargar las empresas" });
   }

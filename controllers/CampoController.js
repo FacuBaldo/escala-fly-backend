@@ -44,13 +44,16 @@ const createCampo = async (req, res) => {
 
 const getCampos = async (req, res) => {
   try {
-    const campos = await prisma.campo.findMany({
-      where: getWhereEmpresa(req),
-      select: campoSelect,
-      orderBy: { createdAt: "desc" }
-    });
-
-    return res.json(campos);
+    {
+      const { page = '1', limit = '20', search = '', empresaId } = req.query;
+      if (typeof page !== 'string' || !/^[1-9]\d*$/.test(page) || !Number.isSafeInteger(Number(page)) || typeof limit !== 'string' || !/^[1-9]\d*$/.test(limit) || Number(limit) > 100 || !Number.isSafeInteger((Number(page) - 1) * Number(limit)) || typeof search !== 'string' || search.length > 200 || (empresaId !== undefined && typeof empresaId !== 'string')) return res.status(400).json({ message: 'Filtros o paginacion invalidos' });
+      const texto = search.trim().replace(/\s+/g, ' ');
+      const empresaFiltro = req.auth.rol === 'ADMIN' ? empresaId || null : req.auth.empresaId;
+      const ids = await prisma.$queryRaw`SELECT "id" FROM "Campo" WHERE strpos(unaccent(lower(regexp_replace(trim("nombre"), '\\s+', ' ', 'g'))), unaccent(lower(${texto}))) > 0 AND (${empresaFiltro}::text IS NULL OR "empresaId" = ${empresaFiltro}) ORDER BY "createdAt" DESC, "id" DESC LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`;
+      const where = getWhereEmpresa(req, { id: { in: ids.map((row) => row.id) } });
+      const campos = await prisma.campo.findMany({ where, select: { ...campoSelect, empresa: { select: { id: true, nombre: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      return res.json({ data: campos.slice(0, Number(limit)), pagination: { page: Number(page), hasNextPage: ids.length > Number(limit) } });
+    }
   } catch (error) {
     return res.status(500).json({ message: "No se pudieron cargar los campos" });
   }
