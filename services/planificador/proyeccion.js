@@ -69,26 +69,6 @@ function proyectarPoligonoALocal(geometriaGeoJson, origen) {
 }
 
 /**
- * Distancia geodésica Haversine entre dos puntos WGS84 en metros.
- * @param {[number, number]} pt1 - [lng1, lat1]
- * @param {[number, number]} pt2 - [lng2, lat2]
- * @returns {number} Distancia en metros
- */
-function distanciaHaversine([lng1, lat1], [lng2, lat2]) {
-  const phi1 = lat1 * RAD;
-  const phi2 = lat2 * RAD;
-  const deltaPhi = (lat2 - lat1) * RAD;
-  const deltaLambda = (lng2 - lng1) * RAD;
-
-  const a =
-    Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-    Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return RADIO_TIERRA_METROS * c;
-}
-
-/**
  * Distancia euclidiana en el plano local métrico.
  * @param {[number, number]} p1 - [x1, y1]
  * @param {[number, number]} p2 - [x2, y2]
@@ -101,11 +81,9 @@ function distanciaEuclidiana([x1, y1], [x2, y2]) {
 }
 
 module.exports = {
-  RADIO_TIERRA_METROS,
   calcularCentroide,
   wgs84ALocal,
   localAWgs84,
   proyectarPoligonoALocal,
-  distanciaHaversine,
   distanciaEuclidiana
 };

@@ -150,7 +150,5 @@ function generarPasadasBarrido(anillosLocales, anguloRadianes, anchoAplicacion) 
 }
 
 module.exports = {
-  rotarPunto,
-  intersectarLineaConPoligono,
   generarPasadasBarrido
 };

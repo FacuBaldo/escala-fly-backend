@@ -74,7 +74,7 @@ const puedeGestionarUsuario = (req, usuarioObjetivo) => {
   return usuarioObjetivo.id === req.auth.usuarioId || ROLES_GESTIONABLES_POR_ENCARGADO.includes(usuarioObjetivo.rol);
 };
 
-const getUsuarioDataAutorizada = (req, contrasenaHasheada, usuarioActual = null) => {
+const getUsuarioDataAutorizada = (req, usuarioActual = null) => {
   const rol = req.body.rol || usuarioActual?.rol || ROLES.CLIENTE;
   const cambiaRol = !usuarioActual || rol !== usuarioActual.rol;
   const esPropioUsuario = usuarioActual?.id === req.auth.usuarioId;
@@ -100,8 +100,7 @@ const getUsuarioDataAutorizada = (req, contrasenaHasheada, usuarioActual = null)
       apellido: req.body.apellido.trim(),
       email: normalizeEmail(req.body.email),
       rol,
-      empresaId: rol === ROLES.ADMIN ? null : empresaId,
-      ...(contrasenaHasheada ? { contrasena: contrasenaHasheada } : {})
+      empresaId: rol === ROLES.ADMIN ? null : empresaId
     }
   };
 };
@@ -119,7 +118,7 @@ const createUsuario = async (req, res) => {
       return res.status(400).json({ message: errorValidacion });
     }
 
-    const { data, error } = getUsuarioDataAutorizada(req, null);
+    const { data, error } = getUsuarioDataAutorizada(req);
 
     if (error) {
       return res.status(error.status).json({ message: error.message });
@@ -197,7 +196,7 @@ const updateUsuario = async (req, res) => {
       return res.status(403).json({ message: "No tenes permisos para modificar este usuario" });
     }
 
-    const { data, error } = getUsuarioDataAutorizada(req, null, usuarioActual);
+    const { data, error } = getUsuarioDataAutorizada(req, usuarioActual);
 
     if (error) {
       return res.status(error.status).json({ message: error.message });

@@ -40,7 +40,6 @@ const verificarToken = async (req, res, next) => {
       return res.status(403).json({ message: "El usuario no tiene una empresa asignada" });
     }
 
-    req.usuario = usuario;
     req.auth = {
       usuarioId: usuario.id,
       email: usuario.email,

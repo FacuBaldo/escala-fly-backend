@@ -162,20 +162,17 @@ function particionarEnViajes(segmentosRuta, config) {
      */
     const consumirPasadaDemasiadoLarga = (segmentos) => {
       const sobrantes = [];
-      let puntoPartida = null;
-
       for (const seg of segmentos) {
         if (sobrantes.length > 0) {
           sobrantes.push(seg);
           continue;
         }
 
-        const pDesde = puntoPartida || seg.desde;
+        const pDesde = seg.desde;
         const distanciaSeg = distanciaEuclidiana(pDesde, seg.hasta);
 
         if (seg.tipo === "ENLACE") {
           agregarSegmento(seg, pDesde);
-          puntoPartida = null;
           continue;
         }
 
@@ -183,7 +180,6 @@ function particionarEnViajes(segmentosRuta, config) {
 
         if (caldoNecesario <= caldoRestanteEnTolva + 1e-5) {
           agregarSegmento(seg, pDesde);
-          puntoPartida = null;
           continue;
         }
 
@@ -340,7 +336,5 @@ function particionarEnViajes(segmentosRuta, config) {
 }
 
 module.exports = {
-  agruparPorPasada,
-  interpolarPunto,
   particionarEnViajes
 };

@@ -21,7 +21,6 @@ const sumar = (a, b) => [a[0] + b[0], a[1] + b[1]];
 const restar = (a, b) => [a[0] - b[0], a[1] - b[1]];
 const escalar = (v, k) => [v[0] * k, v[1] * k];
 const producto = (a, b) => a[0] * b[0] + a[1] * b[1];
-const cruz = (a, b) => a[0] * b[1] - a[1] * b[0];
 // Normal a la izquierda del vector (giro antihorario)
 const izquierda = (v) => [-v[1], v[0]];
 
@@ -149,9 +148,6 @@ function calcularGiro(salida, rumbo, entrada, radio) {
 }
 
 module.exports = {
-  aperturaPera,
   calcularGiro,
-  cruz,
-  largoGiro,
-  normalizar
+  largoGiro
 };

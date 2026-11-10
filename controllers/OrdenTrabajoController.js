@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 const prisma = require("../configs/prisma");
-const { getEmpresaIdParaLectura, getEmpresaIdParaEscritura, isAdmin } = require("../utils/autorizacion");
+const { isAdmin } = require("../utils/autorizacion");
 const { esTextoNoVacio, esTextoOpcional } = require("../utils/validacion");
 const { PATRONES_VALIDOS, RADIO_GIRO_POR_DEFECTO, generarPlanDeVuelo } = require("../services/planificador/index");
 const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
