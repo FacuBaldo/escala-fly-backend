@@ -218,6 +218,15 @@ const updateUsuario = async (req, res) => {
       return res.status(error.status).json({ message: error.message });
     }
 
+    if (usuarioActual.rol === ROLES.PILOTO && (data.rol !== ROLES.PILOTO || data.empresaId !== usuarioActual.empresaId)) {
+      const asignadas = await prisma.ordenTrabajo.count({ where: { pilotoId: usuarioActual.id } });
+      if (asignadas) return res.status(409).json({ message: "El piloto tiene órdenes asignadas; reasignalas antes de cambiar su rol o empresa" });
+    }
+    if (usuarioActual.rol === ROLES.CLIENTE && (data.rol !== ROLES.CLIENTE || data.empresaId !== usuarioActual.empresaId)) {
+      const asignadas = await prisma.ordenTrabajo.count({ where: { clienteId: usuarioActual.id } });
+      if (asignadas) return res.status(409).json({ message: "El cliente tiene órdenes asignadas; reasignalas antes de cambiar su rol o empresa" });
+    }
+
     const { contrasena } = req.body;
     const contrasenaHasheada = contrasena ? await bcrypt.hash(contrasena, SALT_ROUNDS) : null;
 
@@ -260,6 +269,13 @@ const deleteUsuario = async (req, res) => {
 
     if (!puedeGestionarUsuario(req, usuarioActual)) {
       return res.status(403).json({ message: "No tenes permisos para eliminar este usuario" });
+    }
+
+    if (await prisma.ordenTrabajo.count({ where: { pilotoId: usuarioActual.id } })) {
+      return res.status(409).json({ message: "El piloto tiene órdenes asignadas y no puede eliminarse" });
+    }
+    if (await prisma.ordenTrabajo.count({ where: { clienteId: usuarioActual.id } })) {
+      return res.status(409).json({ message: "El cliente tiene órdenes asignadas y no puede eliminarse" });
     }
 
     const usuario = await prisma.usuario.delete({

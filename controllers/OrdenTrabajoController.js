@@ -9,6 +9,17 @@ const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
 const ESTADOS_ORDEN = ["PENDIENTE", "PLANIFICADA", "EN_EJECUCION", "FINALIZADA", "CANCELADA"];
 // Una vez finalizada o cancelada, la orden queda cerrada
 const ESTADOS_CERRADOS = ["FINALIZADA", "CANCELADA"];
+const puedeVerOrden = (req, orden) => isAdmin(req) || (
+  orden.empresaId === req.auth.empresaId &&
+  (req.auth.rol !== "PILOTO" || orden.pilotoId === req.auth.usuarioId) &&
+  (req.auth.rol !== "CLIENTE" || orden.clienteId === req.auth.usuarioId)
+);
+const pilotoValido = (id, empresaId) => esTextoNoVacio(id)
+  ? prisma.usuario.findFirst({ where: { id, empresaId, rol: "PILOTO" }, select: { id: true } })
+  : Promise.resolve(null);
+const clienteValido = (id, empresaId) => esTextoNoVacio(id)
+  ? prisma.usuario.findFirst({ where: { id, empresaId, rol: "CLIENTE" }, select: { id: true } })
+  : Promise.resolve(null);
 
 // La persistencia del plan puede incluir muchos viajes; se amplía el límite por defecto (5 s)
 const OPCIONES_TRANSACCION = { maxWait: 15000, timeout: 120000 };
@@ -186,6 +197,8 @@ const createOrden = async (req, res) => {
     const {
       loteId,
       aeronaveId,
+      pilotoId,
+      clienteId,
       anchoAplicacionMetros,
       litrosPorHectarea,
       capacidadUtilLitros,
@@ -239,6 +252,13 @@ const createOrden = async (req, res) => {
     }
     const lote = datosLote.lote;
     const empresaIdEfectiva = lote.empresaId;
+
+    if (!await pilotoValido(pilotoId, empresaIdEfectiva)) {
+      return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    }
+    if (!await clienteValido(clienteId, empresaIdEfectiva)) {
+      return res.status(400).json({ message: "Selecciona un cliente de la empresa" });
+    }
 
     // 2. Validar aeronave
     const aeronave = await prisma.aeronave.findUnique({
@@ -311,6 +331,8 @@ const createOrden = async (req, res) => {
         data: {
           id: ordenId,
           empresaId: empresaIdEfectiva,
+          pilotoId,
+          clienteId,
           loteId: lote.id,
           aeronaveId: aeronave.id,
           anchoAplicacionMetros: ancho,
@@ -343,6 +365,8 @@ const createOrden = async (req, res) => {
     const ordenCreada = await prisma.ordenTrabajo.findUnique({
       where: { id: ordenId },
       include: {
+        piloto: { select: { id: true, nombre: true, apellido: true } },
+        cliente: { select: { id: true, nombre: true, apellido: true } },
         lote: {
           select: {
             id: true,
@@ -418,6 +442,8 @@ const getOrdenes = async (req, res) => {
     if (campoId) {
       where.lote = { campoId };
     }
+    if (req.auth.rol === "PILOTO") where.pilotoId = req.auth.usuarioId;
+    if (req.auth.rol === "CLIENTE") where.clienteId = req.auth.usuarioId;
 
     const { page = '1', limit = '20', search = '', aeronaveId } = req.query;
     {
@@ -426,7 +452,9 @@ const getOrdenes = async (req, res) => {
       if (search.trim()) {
         const texto = search.trim().replace(/^#/, '');
         const empresaFiltro = isAdmin(req) ? empresaIdQuery || null : req.auth.empresaId;
-        const ids = await prisma.$queryRaw`SELECT o."id" FROM "OrdenTrabajo" o JOIN "Lote" l ON l."id" = o."loteId" WHERE strpos(o."numero"::text, ${texto}) > 0 AND (${empresaFiltro}::text IS NULL OR o."empresaId" = ${empresaFiltro}) AND (${loteId || null}::text IS NULL OR o."loteId" = ${loteId || null}) AND (${campoId || null}::text IS NULL OR l."campoId" = ${campoId || null}) AND (${aeronaveId || null}::text IS NULL OR o."aeronaveId" = ${aeronaveId || null}) AND (${estado || null}::text IS NULL OR o."estado"::text = ${estado || null}) ORDER BY o."createdAt" DESC, o."id" DESC LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`;
+        const pilotoFiltro = req.auth.rol === "PILOTO" ? req.auth.usuarioId : null;
+        const clienteFiltro = req.auth.rol === "CLIENTE" ? req.auth.usuarioId : null;
+        const ids = await prisma.$queryRaw`SELECT o."id" FROM "OrdenTrabajo" o JOIN "Lote" l ON l."id" = o."loteId" WHERE strpos(o."numero"::text, ${texto}) > 0 AND (${empresaFiltro}::text IS NULL OR o."empresaId" = ${empresaFiltro}) AND (${pilotoFiltro}::text IS NULL OR o."pilotoId" = ${pilotoFiltro}) AND (${clienteFiltro}::text IS NULL OR o."clienteId" = ${clienteFiltro}) AND (${loteId || null}::text IS NULL OR o."loteId" = ${loteId || null}) AND (${campoId || null}::text IS NULL OR l."campoId" = ${campoId || null}) AND (${aeronaveId || null}::text IS NULL OR o."aeronaveId" = ${aeronaveId || null}) AND (${estado || null}::text IS NULL OR o."estado"::text = ${estado || null}) ORDER BY o."createdAt" DESC, o."id" DESC LIMIT ${Number(limit) + 1} OFFSET ${(Number(page) - 1) * Number(limit)}`;
         where.id = { in: ids.map((row) => row.id) };
       }
     }
@@ -438,6 +466,8 @@ const getOrdenes = async (req, res) => {
       take: Number(limit) + 1,
       include: {
         empresa: { select: { id: true, nombre: true } },
+        piloto: { select: { id: true, nombre: true, apellido: true } },
+        cliente: { select: { id: true, nombre: true, apellido: true } },
         lote: {
           select: {
             id: true,
@@ -492,6 +522,8 @@ const getOrdenById = async (req, res) => {
     const orden = await prisma.ordenTrabajo.findUnique({
       where: { id },
       include: {
+        piloto: { select: { id: true, nombre: true, apellido: true } },
+        cliente: { select: { id: true, nombre: true, apellido: true } },
         lote: {
           select: {
             id: true,
@@ -533,7 +565,7 @@ const getOrdenById = async (req, res) => {
       return res.status(404).json({ message: "La orden de trabajo no existe" });
     }
 
-    if (!isAdmin(req) && orden.empresaId !== req.auth.empresaId) {
+    if (!puedeVerOrden(req, orden)) {
       return res.status(404).json({ message: "La orden de trabajo no existe" });
     }
 
@@ -554,10 +586,10 @@ const getPlanByOrdenId = async (req, res) => {
 
     const orden = await prisma.ordenTrabajo.findUnique({
       where: { id: ordenId },
-      select: { id: true, empresaId: true, loteId: true }
+      select: { id: true, empresaId: true, loteId: true, pilotoId: true, clienteId: true }
     });
 
-    if (!orden || (!isAdmin(req) && orden.empresaId !== req.auth.empresaId)) {
+    if (!orden || !puedeVerOrden(req, orden)) {
       return res.status(404).json({ message: "La orden de trabajo no existe" });
     }
 
@@ -774,6 +806,8 @@ const updateOrden = async (req, res) => {
       litrosPorHectarea,
       capacidadUtilLitros,
       aeronaveId,
+      pilotoId,
+      clienteId,
       radioGiroMetros,
       patron,
       observaciones,
@@ -795,6 +829,15 @@ const updateOrden = async (req, res) => {
       return res.status(409).json({
         message: `La orden está ${ordenActual.estado.toLowerCase()} y ya no puede modificarse`
       });
+    }
+
+    const nuevoPilotoId = pilotoId === undefined ? ordenActual.pilotoId : pilotoId;
+    if (!await pilotoValido(nuevoPilotoId, ordenActual.empresaId)) {
+      return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    }
+    const nuevoClienteId = clienteId === undefined ? ordenActual.clienteId : clienteId;
+    if (!await clienteValido(nuevoClienteId, ordenActual.empresaId)) {
+      return res.status(400).json({ message: "Selecciona un cliente de la empresa" });
     }
 
     if (estado !== undefined && !ESTADOS_ORDEN.includes(estado)) {
@@ -907,6 +950,8 @@ const updateOrden = async (req, res) => {
           radioGiroMetros: parametrosRuta.radio,
           patron: parametrosRuta.patron,
           aeronaveId: nuevaAeronaveId,
+          pilotoId: nuevoPilotoId,
+          clienteId: nuevoClienteId,
           estado: estado !== undefined ? estado : undefined,
           observaciones: observaciones !== undefined ? (observaciones ? observaciones.trim() : null) : undefined,
           fechaPrevista: fechaPrevista !== undefined ? validacionFecha.fecha : undefined
@@ -934,6 +979,8 @@ const updateOrden = async (req, res) => {
     const ordenActualizada = await prisma.ordenTrabajo.findUnique({
       where: { id },
       include: {
+        piloto: { select: { id: true, nombre: true, apellido: true } },
+        cliente: { select: { id: true, nombre: true, apellido: true } },
         lote: { select: { id: true, nombre: true, superficie: true } },
         aeronave: { select: { id: true, matricula: true, modelo: true } },
         productos: { include: { producto: true } },
@@ -1015,6 +1062,53 @@ const regenerarPlan = async (req, res) => {
  * DELETE /api/ordenes/:id
  * Elimina una orden de trabajo (y por cascade sus planes y viajes).
  */
+const asignarClienteOrden = async (req, res) => {
+  try {
+    const orden = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, empresaId: true } });
+    if (!orden || (!isAdmin(req) && orden.empresaId !== req.auth.empresaId)) return res.status(404).json({ message: "La orden de trabajo no existe" });
+    if (!await clienteValido(req.body.clienteId, orden.empresaId)) return res.status(400).json({ message: "Selecciona un cliente de la empresa" });
+    const actualizada = await prisma.ordenTrabajo.update({ where: { id: orden.id }, data: { clienteId: req.body.clienteId }, select: { id: true, clienteId: true, cliente: { select: { id: true, nombre: true, apellido: true } } } });
+    return res.json(actualizada);
+  } catch (error) {
+    console.error("Error al asignar cliente:", error);
+    return res.status(500).json({ message: "No se pudo asignar el cliente" });
+  }
+};
+
+const asignarPilotoOrden = async (req, res) => {
+  try {
+    const orden = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, empresaId: true } });
+    if (!orden || (!isAdmin(req) && orden.empresaId !== req.auth.empresaId)) return res.status(404).json({ message: "La orden de trabajo no existe" });
+    if (!await pilotoValido(req.body.pilotoId, orden.empresaId)) return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    const actualizada = await prisma.ordenTrabajo.update({ where: { id: orden.id }, data: { pilotoId: req.body.pilotoId }, select: { id: true, pilotoId: true, piloto: { select: { id: true, nombre: true, apellido: true } } } });
+    return res.json(actualizada);
+  } catch (error) {
+    console.error("Error al asignar piloto:", error);
+    return res.status(500).json({ message: "No se pudo asignar el piloto" });
+  }
+};
+
+const cambiarEstadoOrden = async (req, res) => {
+  try {
+    const orden = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, empresaId: true, pilotoId: true, estado: true } });
+    if (!orden || !puedeVerOrden(req, orden)) return res.status(404).json({ message: "La orden de trabajo no existe" });
+    const siguiente = req.body.estado;
+    const permitido = req.auth.rol === "PILOTO"
+      ? (orden.estado === "PLANIFICADA" && siguiente === "EN_EJECUCION") || (orden.estado === "EN_EJECUCION" && siguiente === "FINALIZADA")
+      : siguiente === "CANCELADA" && !ESTADOS_CERRADOS.includes(orden.estado);
+    if (!permitido) return res.status(409).json({ message: "No se permite ese cambio de estado" });
+    const resultado = await prisma.ordenTrabajo.updateMany({
+      where: { id: orden.id, estado: orden.estado, empresaId: orden.empresaId, ...(req.auth.rol === "PILOTO" ? { pilotoId: req.auth.usuarioId } : {}) },
+      data: { estado: siguiente }
+    });
+    if (!resultado.count) return res.status(409).json({ message: "La orden cambió. Actualiza el listado e intenta nuevamente" });
+    return res.json({ id: orden.id, estado: siguiente });
+  } catch (error) {
+    console.error("Error al cambiar el estado de la orden:", error);
+    return res.status(500).json({ message: "No se pudo cambiar el estado de la orden" });
+  }
+};
+
 const deleteOrden = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1046,6 +1140,9 @@ const deleteOrden = async (req, res) => {
 };
 
 module.exports = {
+  asignarClienteOrden,
+  asignarPilotoOrden,
+  cambiarEstadoOrden,
   createOrden,
   getOrdenes,
   getOrdenById,

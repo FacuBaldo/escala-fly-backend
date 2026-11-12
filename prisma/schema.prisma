@@ -130,6 +130,8 @@ model Usuario {
   rol        Rol      @default(CLIENTE)
   empresaId  String?
   empresa    Empresa? @relation(fields: [empresaId], references: [id])
+  ordenesAsignadas OrdenTrabajo[] @relation("PilotoOrden")
+  ordenesCliente OrdenTrabajo[] @relation("ClienteOrden")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -179,6 +181,10 @@ model OrdenTrabajo {
   numero                Int             @default(autoincrement())
   empresaId             String
   empresa               Empresa         @relation(fields: [empresaId], references: [id])
+  pilotoId              String?
+  piloto                Usuario?        @relation("PilotoOrden", fields: [pilotoId], references: [id], onDelete: Restrict)
+  clienteId             String?
+  cliente               Usuario?        @relation("ClienteOrden", fields: [clienteId], references: [id], onDelete: Restrict)
   loteId                String
   lote                  Lote            @relation(fields: [loteId], references: [id], onDelete: Cascade)
   aeronaveId            String
@@ -199,6 +205,8 @@ model OrdenTrabajo {
   @@index([empresaId])
   @@index([loteId])
   @@index([aeronaveId])
+  @@index([pilotoId])
+  @@index([clienteId])
 }
 
 model OrdenProducto {
