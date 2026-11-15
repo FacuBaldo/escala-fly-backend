@@ -17,6 +17,9 @@ const puedeVerOrden = (req, orden) => isAdmin(req) || (
 const pilotoValido = (id, empresaId) => esTextoNoVacio(id)
   ? prisma.usuario.findFirst({ where: { id, empresaId, rol: "PILOTO" }, select: { id: true } })
   : Promise.resolve(null);
+// El piloto es opcional: se puede crear la orden sin piloto y asignarlo despues.
+// undefined = no se envio; null o "" = sin piloto; cualquier otro valor tiene que ser un id valido.
+const normalizarPilotoOpcional = (valor) => (valor === null || valor === "" ? null : valor);
 const clienteValido = (id, empresaId) => esTextoNoVacio(id)
   ? prisma.usuario.findFirst({ where: { id, empresaId, rol: "CLIENTE" }, select: { id: true } })
   : Promise.resolve(null);
@@ -253,8 +256,9 @@ const createOrden = async (req, res) => {
     const lote = datosLote.lote;
     const empresaIdEfectiva = lote.empresaId;
 
-    if (!await pilotoValido(pilotoId, empresaIdEfectiva)) {
-      return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    const pilotoIdFinal = normalizarPilotoOpcional(pilotoId) ?? null;
+    if (pilotoIdFinal !== null && !await pilotoValido(pilotoIdFinal, empresaIdEfectiva)) {
+      return res.status(400).json({ message: "El piloto elegido no es un piloto de la empresa" });
     }
     if (!await clienteValido(clienteId, empresaIdEfectiva)) {
       return res.status(400).json({ message: "Selecciona un cliente de la empresa" });
@@ -331,7 +335,7 @@ const createOrden = async (req, res) => {
         data: {
           id: ordenId,
           empresaId: empresaIdEfectiva,
-          pilotoId,
+          pilotoId: pilotoIdFinal,
           clienteId,
           loteId: lote.id,
           aeronaveId: aeronave.id,
@@ -831,9 +835,9 @@ const updateOrden = async (req, res) => {
       });
     }
 
-    const nuevoPilotoId = pilotoId === undefined ? ordenActual.pilotoId : pilotoId;
-    if (!await pilotoValido(nuevoPilotoId, ordenActual.empresaId)) {
-      return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    const nuevoPilotoId = pilotoId === undefined ? ordenActual.pilotoId : normalizarPilotoOpcional(pilotoId);
+    if (nuevoPilotoId !== null && !await pilotoValido(nuevoPilotoId, ordenActual.empresaId)) {
+      return res.status(400).json({ message: "El piloto elegido no es un piloto de la empresa" });
     }
     const nuevoClienteId = clienteId === undefined ? ordenActual.clienteId : clienteId;
     if (!await clienteValido(nuevoClienteId, ordenActual.empresaId)) {
