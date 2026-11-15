@@ -152,6 +152,7 @@ model Producto {
   ordenesProducto OrdenProducto[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+  cargasProducto  CargaProducto[]
 
   @@index([empresaId])
   @@index([tipoId])
@@ -201,6 +202,7 @@ model OrdenTrabajo {
   planVuelo             PlanVuelo?
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
+  cargasProducto        CargaProducto[]
 
   @@index([empresaId])
   @@index([loteId])
@@ -216,6 +218,8 @@ model OrdenProducto {
   productoId       String
   producto         Producto     @relation(fields: [productoId], references: [id])
   dosisPorHectarea Float?
+  // Cantidad total del producto que trajo el cliente (en la unidad del producto)
+  cantidadTotalCliente Float?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
@@ -268,4 +272,25 @@ model Viaje {
   updatedAt                 DateTime                                     @updatedAt
 
   @@index([planId])
+}
+
+// Cuánto de cada producto lleva cada carga (viaje) del plan: es la orden del cargador.
+// Se calcula sola al generar la ruta (services/reparto) y el encargado la puede corregir.
+model CargaProducto {
+  id                 String       @id @default(uuid())
+  ordenId            String
+  orden              OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  numeroViaje        Int
+  productoId         String
+  producto           Producto     @relation(fields: [productoId], references: [id])
+  cantidad           Float
+  // Lo que calculó el sistema: si el plan cambia y este valor no, se conserva la corrección manual
+  cantidadAutomatica Float
+  manual             Boolean      @default(false)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@unique([ordenId, numeroViaje, productoId])
+  @@index([ordenId])
+  @@index([productoId])
 }
