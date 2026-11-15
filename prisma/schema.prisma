@@ -26,6 +26,7 @@ enum PatronVuelo {
   AUTOMATICO
   IDA_Y_VUELTA
   REDONDO
+  ESPIRAL
 }
 
 enum EstadoOrden {

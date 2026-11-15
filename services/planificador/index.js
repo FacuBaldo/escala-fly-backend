@@ -9,7 +9,7 @@ const { optimizarRutaVuelo } = require("./optimizador");
 // 180-200 km/h gira con un radio de entre 180 y 315 m según cuánto se incline.
 // Sprint 4: el interesado indicó que lo habitual en la práctica es 300-350 m.
 const RADIO_GIRO_POR_DEFECTO = 300;
-const PATRONES_VALIDOS = ["AUTOMATICO", "IDA_Y_VUELTA", "REDONDO"];
+const PATRONES_VALIDOS = ["AUTOMATICO", "IDA_Y_VUELTA", "REDONDO", "ESPIRAL"];
 
 /**
  * Genera el plan de vuelo óptimo: pasadas, patrón de trabajo con giros reales y corte en viajes por caldo.
@@ -104,6 +104,7 @@ function generarPlanDeVuelo(params) {
     radioGiroMetros: radio,
     distanciaGirosMetros: resultado.distanciaGirosMetros,
     comparacionPatrones: resultado.comparacionPatrones,
+    recomendacion: resultado.recomendacion,
     cantidadPasadas: resultado.cantidadPasadas,
     cantidadViajes: resultado.viajes.length,
     superficieHa: resultado.superficieHa,

@@ -675,6 +675,7 @@ const getPlanByOrdenId = async (req, res) => {
       patronSolicitado: params.patronSolicitado ?? null,
       radioGiroMetros: params.radioGiroMetros ?? null,
       comparacionPatrones: params.comparacionPatrones ?? null,
+      recomendacion: params.recomendacion ?? null,
       cantidadPasadas: plan.cantidadPasadas,
       cantidadViajes: plan.cantidadViajes,
       superficieHa: plan.superficieHa,
@@ -757,6 +758,8 @@ const calcularPlan = ({ lote, ancho, lHa, cap, radio, patron }) => {
     radioGiroMetros: radio,
     patronSolicitado: patron,
     comparacionPatrones: resultadoPlan.comparacionPatrones,
+    // Patrón recomendado según la forma del lote, con el motivo (lo ve el piloto)
+    recomendacion: resultadoPlan.recomendacion,
     // Metadatos compactos referenciados al recorrido PostGIS de cada viaje.
     segmentosPorViaje: Object.fromEntries(resultadoPlan.viajes.map((v) => [v.numero, v.segmentos])),
     pistaPrincipalId: lote.pistaPrincipal.id,
