@@ -7,7 +7,8 @@ const { optimizarRutaVuelo } = require("./optimizador");
 
 // Radio con el que se calculan los giros si no se indica otro: un avión agrícola a
 // 180-200 km/h gira con un radio de entre 180 y 315 m según cuánto se incline.
-const RADIO_GIRO_POR_DEFECTO = 200;
+// Sprint 4: el interesado indicó que lo habitual en la práctica es 300-350 m.
+const RADIO_GIRO_POR_DEFECTO = 300;
 const PATRONES_VALIDOS = ["AUTOMATICO", "IDA_Y_VUELTA", "REDONDO"];
 
 /**
@@ -19,7 +20,7 @@ const PATRONES_VALIDOS = ["AUTOMATICO", "IDA_Y_VUELTA", "REDONDO"];
  * @param {number} params.anchoAplicacionMetros - Ancho de pasada en metros (> 0)
  * @param {number} params.litrosPorHectarea - Dosis de caldo por hectárea (> 0)
  * @param {number} params.capacidadUtilLitros - Capacidad útil de la tolva en litros (> 0)
- * @param {number} [params.radioGiroMetros] - Radio de giro de la aeronave (> 0, por defecto 200 m)
+ * @param {number} [params.radioGiroMetros] - Radio de giro de la aeronave (> 0, por defecto 300 m)
  * @param {"AUTOMATICO"|"IDA_Y_VUELTA"|"REDONDO"} [params.patron] - Patrón de trabajo; AUTOMATICO
  *   evalúa todos y se queda con el más corto
  * @returns {Object} Plan de vuelo completo con estadísticas y viajes
