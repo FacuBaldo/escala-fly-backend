@@ -9,7 +9,10 @@
 
 const { generarPasadasBarrido } = require("./barrido");
 const { PATRONES, ordenIdaYVuelta, ordenRedondo, saltoRedondo, secuenciarPasadas } = require("./secuencia");
+// PATRONES son los de pasadas paralelas (dependen del rumbo); ESPIRAL se evalúa aparte
 const { particionarEnViajes } = require("./viajes");
+const { entradasCandidatas, prepararEspiral, secuenciarEspiral } = require("./espiral");
+const { analizarForma, recomendarPatron } = require("./forma");
 
 const RAD = Math.PI / 180.0;
 const PASO_ANGULAR_GRADOS = 2;
@@ -50,15 +53,39 @@ function resumirViajes(viajes) {
  * @param {Array<Array<[number, number]>>} anillosLocales - Anillos del polígono en metros
  * @param {Object} config - Configuración agronómica, pistas y aeronave
  * @param {number} config.radioGiroMetros - Radio de giro de la aeronave
- * @param {"AUTOMATICO" | "IDA_Y_VUELTA" | "REDONDO"} config.patron - Patrón pedido
- * @returns {Object|null} Mejor plan, con la distancia del mejor plan de cada patrón evaluado
+ * @param {"AUTOMATICO" | "IDA_Y_VUELTA" | "REDONDO" | "ESPIRAL"} config.patron - Patrón pedido.
+ *   AUTOMATICO = el recomendado según la forma del lote (forma.js).
+ * @returns {Object|null} Plan del patrón elegido, con la distancia del mejor plan de cada
+ *   patrón y la recomendación según la forma del lote
  */
 function optimizarRutaVuelo(anillosLocales, config) {
-  const patrones = config.patron && config.patron !== "AUTOMATICO" ? [config.patron] : Object.values(PATRONES);
+  // Sprint 4: se evalúan siempre todos los patrones, aunque se pida uno, para poder
+  // recomendarle al piloto el que corresponde a la forma del lote
+  const patrones = Object.values(PATRONES);
+  const analisis = analizarForma(anillosLocales);
 
-  let mejorPlan = null;
-  // Mejor distancia encontrada por cada patrón, para mostrar la comparación
+  if (config.patron === "ESPIRAL" && !analisis.admiteEspiral) {
+    throw new Error("El patrón de trabajo espiral solo se puede usar en lotes sin entrantes ni huecos: elegí ida y vuelta, redondo o el recomendado.");
+  }
+
+  // Mejor plan encontrado para cada patrón (para recomendar y mostrar la comparación)
   const mejorPorPatron = {};
+  const considerar = (patron, viajes, extra) => {
+    const r = resumirViajes(viajes);
+    if (mejorPorPatron[patron] && mejorPorPatron[patron].distanciaTotalExacta <= r.distTotal) return;
+    mejorPorPatron[patron] = {
+      distanciaTotalExacta: r.distTotal,
+      patron,
+      viajes,
+      distanciaTotalMetros: Math.round(r.distTotal * 10) / 10,
+      distanciaAplicacionMetros: Math.round(r.distAplicacion * 10) / 10,
+      distanciaTrasladoMetros: Math.round(r.distTraslado * 10) / 10,
+      distanciaGirosMetros: Math.round(r.distGiros * 10) / 10,
+      caldoTotalLitros: Math.round(r.caldoTotal * 100) / 100,
+      superficieHa: Math.round(r.superficieTotal * 100) / 100,
+      ...extra
+    };
+  };
 
   for (let anguloDeg = 0; anguloDeg < 180; anguloDeg += PASO_ANGULAR_GRADOS) {
     const pasadas = generarPasadasBarrido(anillosLocales, anguloDeg * RAD, config.anchoAplicacionMetros);
@@ -78,39 +105,43 @@ function optimizarRutaVuelo(anillosLocales, config) {
             const viajes = particionarEnViajes(segmentosRuta, config);
             if (!viajes || viajes.length === 0) continue;
 
-            const r = resumirViajes(viajes);
-
-            if (!(mejorPorPatron[patron] <= r.distTotal)) {
-              mejorPorPatron[patron] = r.distTotal;
-            }
-
-            if (!mejorPlan || r.distTotal < mejorPlan.distanciaTotalExacta) {
-              mejorPlan = {
-                distanciaTotalExacta: r.distTotal,
-                orientacionOptimaGrados: anguloDeg,
-                patron,
-                cantidadPasadas: pasadas.length,
-                viajes,
-                distanciaTotalMetros: Math.round(r.distTotal * 10) / 10,
-                distanciaAplicacionMetros: Math.round(r.distAplicacion * 10) / 10,
-                distanciaTrasladoMetros: Math.round(r.distTraslado * 10) / 10,
-                distanciaGirosMetros: Math.round(r.distGiros * 10) / 10,
-                caldoTotalLitros: Math.round(r.caldoTotal * 100) / 100,
-                superficieHa: Math.round(r.superficieTotal * 100) / 100
-              };
-            }
+            considerar(patron, viajes, { orientacionOptimaGrados: anguloDeg, cantidadPasadas: pasadas.length });
           }
         }
       }
     }
   }
 
-  if (!mejorPlan) return null;
+  // Espiral: no depende del rumbo; se prueba entrar por distintos vértices y en los dos sentidos
+  if (analisis.admiteEspiral) {
+    const espiral = prepararEspiral(anillosLocales, config.anchoAplicacionMetros);
+    if (espiral) {
+      for (const inicio of entradasCandidatas(espiral.vueltas)) {
+        for (const horario of [false, true]) {
+          const segmentosRuta = secuenciarEspiral(espiral.vueltas, { inicio, horario, radioGiroMetros: config.radioGiroMetros });
+          const viajes = particionarEnViajes(segmentosRuta, config);
+          if (viajes && viajes.length > 0) {
+            // El espiral no tiene un rumbo de pasadas: se guarda 0; "pasadas" son las vueltas
+            considerar("ESPIRAL", viajes, { orientacionOptimaGrados: 0, cantidadPasadas: espiral.vueltas.length });
+          }
+        }
+      }
+    }
+  }
 
-  const { distanciaTotalExacta, ...plan } = mejorPlan;
+  const distancias = Object.fromEntries(Object.entries(mejorPorPatron).map(([patron, plan]) => [patron, plan.distanciaTotalExacta]));
+  if (Object.keys(distancias).length === 0) return null;
+
+  const recomendacion = recomendarPatron(analisis, distancias);
+  const patronElegido = config.patron && config.patron !== "AUTOMATICO" ? config.patron : recomendacion.patron;
+  const elegido = mejorPorPatron[patronElegido];
+  if (!elegido) return null;
+
+  const { distanciaTotalExacta, ...plan } = elegido;
   plan.comparacionPatrones = Object.fromEntries(
-    Object.entries(mejorPorPatron).map(([patron, distancia]) => [patron, Math.round(distancia * 10) / 10])
+    Object.entries(distancias).map(([patron, distancia]) => [patron, Math.round(distancia * 10) / 10])
   );
+  plan.recomendacion = { ...recomendacion, metricas: analisis.metricas };
   return plan;
 }
 

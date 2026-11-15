@@ -147,7 +147,50 @@ function calcularGiro(salida, rumbo, entrada, radio) {
   return { tipo, distancia: Math.abs(avance) + largoGiro(radio, separacion), puntos, errorCierre, rumboFinal };
 }
 
+// Por debajo de este cambio de rumbo el avión dobla sin salir del trabajo (borde curvo)
+const UMBRAL_ESQUINA_RAD = (35 * Math.PI) / 180;
+
+/**
+ * Vuelta en una esquina del lote (patrón espiral). El avión llega a la esquina con
+ * `rumboEntrada` y tiene que seguir por el lado siguiente con `rumboSalida`, que
+ * forma un ángulo α con el anterior. Con un radio de 300 m no puede doblar en el
+ * lugar sin dejar la esquina sin aplicar, así que hace un "rulo": sigue derecho
+ * s = R·tan(α/2), gira hacia el lado contrario 360° − α y vuelve derecho
+ * t = R·tan(α/2) hasta entrar al lado nuevo justo por la esquina.
+ * Largo: 2·R·tan(α/2) + R·(2π − α).
+ *
+ * Con cambios de rumbo de hasta 35° (bordes curvos o casi rectos) el avión dobla
+ * siguiendo el borde y sigue aplicando: no se modela vuelta.
+ *
+ * @returns {{ tipo: "SUAVE" | "RULO", distancia: number, puntos: Array<[number, number]>, angulo: number }}
+ */
+function calcularGiroEsquina(esquina, rumboEntrada, rumboSalida, radio) {
+  const u = normalizar(rumboEntrada);
+  const v = normalizar(rumboSalida);
+  const cruz = u[0] * v[1] - u[1] * v[0];
+  const angulo = Math.abs(Math.atan2(cruz, producto(u, v)));
+
+  if (!(radio > 0) || angulo <= UMBRAL_ESQUINA_RAD) {
+    return { tipo: "SUAVE", distancia: 0, puntos: [], angulo };
+  }
+
+  const ladoEsquina = cruz > 0 ? 1 : -1; // hacia dónde dobla el borde
+  const recta = radio * Math.tan(angulo / 2);
+  const puntos = [];
+  let estado = { punto: esquina, rumbo: u };
+
+  estado = avanzarRecta(estado, recta, puntos);
+  estado = avanzarArco(estado, radio, 2 * Math.PI - angulo, -ladoEsquina, puntos);
+  avanzarRecta(estado, recta, puntos);
+  // El rulo termina exactamente en la esquina (se evita arrastrar el redondeo de los arcos)
+  puntos[puntos.length - 1] = esquina;
+
+  return { tipo: "RULO", distancia: 2 * recta + radio * (2 * Math.PI - angulo), puntos, angulo };
+}
+
 module.exports = {
+  UMBRAL_ESQUINA_RAD,
   calcularGiro,
+  calcularGiroEsquina,
   largoGiro
 };
