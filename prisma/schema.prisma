@@ -110,7 +110,7 @@ model Aeronave {
   estado                EstadoAeronave @default(ACTIVA)
   capacidadUtilLitros   Float?
   anchoAplicacionMetros Float?
-  radioGiroMetros       Float?
+  radioGiroMetros       Float          @default(300)
   observaciones         String?
   empresaId             String
   empresa               Empresa        @relation(fields: [empresaId], references: [id])
@@ -192,7 +192,7 @@ model OrdenTrabajo {
   anchoAplicacionMetros Float
   litrosPorHectarea     Float
   capacidadUtilLitros   Float
-  radioGiroMetros       Float           @default(200)
+  radioGiroMetros       Float           @default(300)
   patron                PatronVuelo     @default(AUTOMATICO)
   estado                EstadoOrden     @default(PLANIFICADA)
   observaciones         String?
