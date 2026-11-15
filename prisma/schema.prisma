@@ -95,12 +95,39 @@ model Lote {
   pistaCargaId     String?
   pistaCarga       Pista?                                 @relation("LotePistaCarga", fields: [pistaCargaId], references: [id])
   ordenesTrabajo   OrdenTrabajo[]
+  obstaculos       Obstaculo[]
   createdAt        DateTime                               @default(now())
   updatedAt        DateTime                               @updatedAt
 
   @@index([campoId])
   @@index([pistaPrincipalId])
   @@index([pistaCargaId])
+}
+
+// Referencias para el piloto marcadas sobre el mapa del lote (Sprint 4)
+enum TipoObstaculo {
+  MOLINO
+  CASA
+  GALPON
+  SILO
+  CABLE
+  OTRO
+}
+
+// Obstáculo del lote: punto (molino, casa, galpón, silo, otro) o línea (cable).
+// La geometría se guarda como GeoJSON (WGS84): no se hacen consultas espaciales sobre ella.
+model Obstaculo {
+  id           String        @id @default(uuid())
+  loteId       String
+  lote         Lote          @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  tipo         TipoObstaculo
+  nombre       String?
+  alturaMetros Float?
+  geometria    Json
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([loteId])
 }
 
 model Aeronave {
