@@ -4,6 +4,7 @@ const { isAdmin } = require("../utils/autorizacion");
 const { esTextoNoVacio, esTextoOpcional } = require("../utils/validacion");
 const { PATRONES_VALIDOS, RADIO_GIRO_POR_DEFECTO, generarPlanDeVuelo } = require("../services/planificador/index");
 const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
+const { recalcularCargas } = require("../services/reparto/cargas");
 
 // Estados por los que puede pasar una orden de trabajo
 const ESTADOS_ORDEN = ["PENDIENTE", "PLANIFICADA", "EN_EJECUCION", "FINALIZADA", "CANCELADA"];
@@ -50,6 +51,18 @@ const parsearDosis = (valor, nombreProducto) => {
   }
 
   return { dosis };
+};
+
+// Cantidad total de producto que trajo el cliente (opcional, en la unidad del producto)
+const parsearTotalCliente = (valor, nombreProducto) => {
+  if (valor === undefined || valor === null || valor === "") return { total: null };
+
+  const total = Number(valor);
+  if (!Number.isFinite(total) || total < 0 || total > 1e6) {
+    return { error: `La cantidad que trajo el cliente de ${nombreProducto} debe ser un número mayor o igual a 0` };
+  }
+
+  return { total };
 };
 
 /**
@@ -294,10 +307,16 @@ const createOrden = async (req, res) => {
           return res.status(400).json({ message: validacionDosis.error });
         }
 
+        const validacionTotal = parsearTotalCliente(item.cantidadTotalCliente, prod.nombre);
+        if (validacionTotal.error) {
+          return res.status(400).json({ message: validacionTotal.error });
+        }
+
         productosValidados.push({
           productoId: prod.id,
           nombre: prod.nombre,
-          dosisPorHectarea: validacionDosis.dosis
+          dosisPorHectarea: validacionDosis.dosis,
+          cantidadTotalCliente: validacionTotal.total
         });
       }
     }
@@ -352,7 +371,8 @@ const createOrden = async (req, res) => {
           data: {
             ordenId,
             productoId: prod.productoId,
-            dosisPorHectarea: prod.dosisPorHectarea
+            dosisPorHectarea: prod.dosisPorHectarea,
+            cantidadTotalCliente: prod.cantidadTotalCliente
           }
         });
       }
@@ -791,6 +811,10 @@ const guardarPlan = async (tx, ordenId, { resultadoPlan, parametros }) => {
   // Los viajes (con geometrías PostGIS) van en una sola sentencia
   await insertarViajes(tx, planId, resultadoPlan.viajes);
 
+  // Orden del cargador: reparto de los productos entre las cargas del plan nuevo.
+  // Va acá porque crear, editar y regenerar guardan el plan siempre por esta función.
+  await recalcularCargas(tx, ordenId);
+
   return { planId, version };
 };
 
@@ -910,7 +934,12 @@ const updateOrden = async (req, res) => {
           return res.status(400).json({ message: validacionDosis.error });
         }
 
-        productosValidados.push({ productoId: prod.id, dosisPorHectarea: validacionDosis.dosis });
+        const validacionTotal = parsearTotalCliente(item.cantidadTotalCliente, prod.nombre);
+        if (validacionTotal.error) {
+          return res.status(400).json({ message: validacionTotal.error });
+        }
+
+        productosValidados.push({ productoId: prod.id, dosisPorHectarea: validacionDosis.dosis, cantidadTotalCliente: validacionTotal.total });
       }
     }
 
@@ -966,7 +995,8 @@ const updateOrden = async (req, res) => {
             data: {
               ordenId: id,
               productoId: item.productoId,
-              dosisPorHectarea: item.dosisPorHectarea
+              dosisPorHectarea: item.dosisPorHectarea,
+              cantidadTotalCliente: item.cantidadTotalCliente
             }
           });
         }
