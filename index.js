@@ -10,6 +10,7 @@ const productoRoutes = require("./routes/ProductoRoute");
 const aeronaveRoutes = require("./routes/AeronaveRoute");
 const loteRoutes = require("./routes/LoteRoute");
 const pistaRoutes = require("./routes/PistaRoute");
+const obstaculoRoutes = require("./routes/ObstaculoRoute");
 const ordenTrabajoRoutes = require("./routes/OrdenTrabajoRoute");
 const catalogoRoutes = require("./routes/CatalogoRoute");
 const manejarErrores = require("./middlewares/manejarErrores");
@@ -28,6 +29,7 @@ app.use("/api", productoRoutes);
 app.use("/api", aeronaveRoutes);
 app.use("/api", loteRoutes);
 app.use("/api", pistaRoutes);
+app.use("/api", obstaculoRoutes);
 app.use("/api", ordenTrabajoRoutes);
 app.use("/api", catalogoRoutes);
 
