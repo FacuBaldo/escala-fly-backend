@@ -26,6 +26,7 @@ enum PatronVuelo {
   AUTOMATICO
   IDA_Y_VUELTA
   REDONDO
+  ESPIRAL
 }
 
 enum EstadoOrden {
@@ -94,12 +95,39 @@ model Lote {
   pistaCargaId     String?
   pistaCarga       Pista?                                 @relation("LotePistaCarga", fields: [pistaCargaId], references: [id])
   ordenesTrabajo   OrdenTrabajo[]
+  obstaculos       Obstaculo[]
   createdAt        DateTime                               @default(now())
   updatedAt        DateTime                               @updatedAt
 
   @@index([campoId])
   @@index([pistaPrincipalId])
   @@index([pistaCargaId])
+}
+
+// Referencias para el piloto marcadas sobre el mapa del lote (Sprint 4)
+enum TipoObstaculo {
+  MOLINO
+  CASA
+  GALPON
+  SILO
+  CABLE
+  OTRO
+}
+
+// Obstáculo del lote: punto (molino, casa, galpón, silo, otro) o línea (cable).
+// La geometría se guarda como GeoJSON (WGS84): no se hacen consultas espaciales sobre ella.
+model Obstaculo {
+  id           String        @id @default(uuid())
+  loteId       String
+  lote         Lote          @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  tipo         TipoObstaculo
+  nombre       String?
+  alturaMetros Float?
+  geometria    Json
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([loteId])
 }
 
 model Aeronave {
@@ -110,7 +138,7 @@ model Aeronave {
   estado                EstadoAeronave @default(ACTIVA)
   capacidadUtilLitros   Float?
   anchoAplicacionMetros Float?
-  radioGiroMetros       Float?
+  radioGiroMetros       Float          @default(300)
   observaciones         String?
   empresaId             String
   empresa               Empresa        @relation(fields: [empresaId], references: [id])
@@ -152,6 +180,7 @@ model Producto {
   ordenesProducto OrdenProducto[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+  cargasProducto  CargaProducto[]
 
   @@index([empresaId])
   @@index([tipoId])
@@ -192,7 +221,7 @@ model OrdenTrabajo {
   anchoAplicacionMetros Float
   litrosPorHectarea     Float
   capacidadUtilLitros   Float
-  radioGiroMetros       Float           @default(200)
+  radioGiroMetros       Float           @default(300)
   patron                PatronVuelo     @default(AUTOMATICO)
   estado                EstadoOrden     @default(PLANIFICADA)
   observaciones         String?
@@ -201,6 +230,7 @@ model OrdenTrabajo {
   planVuelo             PlanVuelo?
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
+  cargasProducto        CargaProducto[]
 
   @@index([empresaId])
   @@index([loteId])
@@ -216,6 +246,8 @@ model OrdenProducto {
   productoId       String
   producto         Producto     @relation(fields: [productoId], references: [id])
   dosisPorHectarea Float?
+  // Cantidad total del producto que trajo el cliente (en la unidad del producto)
+  cantidadTotalCliente Float?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
@@ -268,4 +300,25 @@ model Viaje {
   updatedAt                 DateTime                                     @updatedAt
 
   @@index([planId])
+}
+
+// Cuánto de cada producto lleva cada carga (viaje) del plan: es la orden del cargador.
+// Se calcula sola al generar la ruta (services/reparto) y el encargado la puede corregir.
+model CargaProducto {
+  id                 String       @id @default(uuid())
+  ordenId            String
+  orden              OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  numeroViaje        Int
+  productoId         String
+  producto           Producto     @relation(fields: [productoId], references: [id])
+  cantidad           Float
+  // Lo que calculó el sistema: si el plan cambia y este valor no, se conserva la corrección manual
+  cantidadAutomatica Float
+  manual             Boolean      @default(false)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@unique([ordenId, numeroViaje, productoId])
+  @@index([ordenId])
+  @@index([productoId])
 }

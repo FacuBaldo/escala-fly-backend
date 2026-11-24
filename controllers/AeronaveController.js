@@ -86,7 +86,9 @@ const buildAeronaveData = (body, empresaId) => {
     estado: estado || undefined,
     capacidadUtilLitros: numeroOpcional(capacidadUtilLitros),
     anchoAplicacionMetros: numeroOpcional(anchoAplicacionMetros),
-    radioGiroMetros: numeroOpcional(radioGiroMetros),
+    // El radio de giro es obligatorio en la base (300 m por defecto): si no viene,
+    // al crear se usa el valor por defecto y al editar se conserva el actual
+    radioGiroMetros: estaVacio(radioGiroMetros) ? undefined : Number(radioGiroMetros),
     observaciones: observaciones ? observaciones.trim() : null,
     empresaId
   };

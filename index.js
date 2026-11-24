@@ -10,8 +10,10 @@ const productoRoutes = require("./routes/ProductoRoute");
 const aeronaveRoutes = require("./routes/AeronaveRoute");
 const loteRoutes = require("./routes/LoteRoute");
 const pistaRoutes = require("./routes/PistaRoute");
+const obstaculoRoutes = require("./routes/ObstaculoRoute");
 const ordenTrabajoRoutes = require("./routes/OrdenTrabajoRoute");
 const catalogoRoutes = require("./routes/CatalogoRoute");
+const cargaRoutes = require("./routes/CargaRoute");
 const manejarErrores = require("./middlewares/manejarErrores");
 
 const app = express();
@@ -28,8 +30,10 @@ app.use("/api", productoRoutes);
 app.use("/api", aeronaveRoutes);
 app.use("/api", loteRoutes);
 app.use("/api", pistaRoutes);
+app.use("/api", obstaculoRoutes);
 app.use("/api", ordenTrabajoRoutes);
 app.use("/api", catalogoRoutes);
+app.use("/api", cargaRoutes);
 
 app.get("/", (req, res) => {
   res.json({

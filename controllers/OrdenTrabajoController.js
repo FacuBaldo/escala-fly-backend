@@ -4,6 +4,7 @@ const { isAdmin } = require("../utils/autorizacion");
 const { esTextoNoVacio, esTextoOpcional } = require("../utils/validacion");
 const { PATRONES_VALIDOS, RADIO_GIRO_POR_DEFECTO, generarPlanDeVuelo } = require("../services/planificador/index");
 const { CATALOGO_TIPO, CATALOGO_UNIDAD } = require("../utils/catalogos");
+const { recalcularCargas } = require("../services/reparto/cargas");
 
 // Estados por los que puede pasar una orden de trabajo
 const ESTADOS_ORDEN = ["PENDIENTE", "PLANIFICADA", "EN_EJECUCION", "FINALIZADA", "CANCELADA"];
@@ -17,6 +18,9 @@ const puedeVerOrden = (req, orden) => isAdmin(req) || (
 const pilotoValido = (id, empresaId) => esTextoNoVacio(id)
   ? prisma.usuario.findFirst({ where: { id, empresaId, rol: "PILOTO" }, select: { id: true } })
   : Promise.resolve(null);
+// El piloto es opcional: se puede crear la orden sin piloto y asignarlo despues.
+// undefined = no se envio; null o "" = sin piloto; cualquier otro valor tiene que ser un id valido.
+const normalizarPilotoOpcional = (valor) => (valor === null || valor === "" ? null : valor);
 const clienteValido = (id, empresaId) => esTextoNoVacio(id)
   ? prisma.usuario.findFirst({ where: { id, empresaId, rol: "CLIENTE" }, select: { id: true } })
   : Promise.resolve(null);
@@ -50,6 +54,18 @@ const parsearDosis = (valor, nombreProducto) => {
   }
 
   return { dosis };
+};
+
+// Cantidad total de producto que trajo el cliente (opcional, en la unidad del producto)
+const parsearTotalCliente = (valor, nombreProducto) => {
+  if (valor === undefined || valor === null || valor === "") return { total: null };
+
+  const total = Number(valor);
+  if (!Number.isFinite(total) || total < 0 || total > 1e6) {
+    return { error: `La cantidad que trajo el cliente de ${nombreProducto} debe ser un número mayor o igual a 0` };
+  }
+
+  return { total };
 };
 
 /**
@@ -202,7 +218,6 @@ const createOrden = async (req, res) => {
       anchoAplicacionMetros,
       litrosPorHectarea,
       capacidadUtilLitros,
-      radioGiroMetros,
       patron,
       observaciones,
       fechaPrevista,
@@ -253,8 +268,9 @@ const createOrden = async (req, res) => {
     const lote = datosLote.lote;
     const empresaIdEfectiva = lote.empresaId;
 
-    if (!await pilotoValido(pilotoId, empresaIdEfectiva)) {
-      return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    const pilotoIdFinal = normalizarPilotoOpcional(pilotoId) ?? null;
+    if (pilotoIdFinal !== null && !await pilotoValido(pilotoIdFinal, empresaIdEfectiva)) {
+      return res.status(400).json({ message: "El piloto elegido no es un piloto de la empresa" });
     }
     if (!await clienteValido(clienteId, empresaIdEfectiva)) {
       return res.status(400).json({ message: "Selecciona un cliente de la empresa" });
@@ -294,18 +310,24 @@ const createOrden = async (req, res) => {
           return res.status(400).json({ message: validacionDosis.error });
         }
 
+        const validacionTotal = parsearTotalCliente(item.cantidadTotalCliente, prod.nombre);
+        if (validacionTotal.error) {
+          return res.status(400).json({ message: validacionTotal.error });
+        }
+
         productosValidados.push({
           productoId: prod.id,
           nombre: prod.nombre,
-          dosisPorHectarea: validacionDosis.dosis
+          dosisPorHectarea: validacionDosis.dosis,
+          cantidadTotalCliente: validacionTotal.total
         });
       }
     }
 
-    // 4. Radio de giro (si no viene, el de la aeronave) y patrón de trabajo
+    // 4. Radio de giro (fijo en la aeronave) y patrón de trabajo
     const parametrosRuta = parsearParametrosRuta(
-      { radioGiroMetros, patron },
-      { radio: aeronave.radioGiroMetros ?? RADIO_GIRO_POR_DEFECTO, patron: "AUTOMATICO" }
+      { patron },
+      { radio: radioDeAeronave(aeronave), patron: "AUTOMATICO" }
     );
     if (parametrosRuta.error) {
       return res.status(400).json({ message: parametrosRuta.error });
@@ -331,7 +353,7 @@ const createOrden = async (req, res) => {
         data: {
           id: ordenId,
           empresaId: empresaIdEfectiva,
-          pilotoId,
+          pilotoId: pilotoIdFinal,
           clienteId,
           loteId: lote.id,
           aeronaveId: aeronave.id,
@@ -352,7 +374,8 @@ const createOrden = async (req, res) => {
           data: {
             ordenId,
             productoId: prod.productoId,
-            dosisPorHectarea: prod.dosisPorHectarea
+            dosisPorHectarea: prod.dosisPorHectarea,
+            cantidadTotalCliente: prod.cantidadTotalCliente
           }
         });
       }
@@ -586,7 +609,7 @@ const getPlanByOrdenId = async (req, res) => {
 
     const orden = await prisma.ordenTrabajo.findUnique({
       where: { id: ordenId },
-      select: { id: true, empresaId: true, loteId: true, pilotoId: true, clienteId: true }
+      select: { id: true, empresaId: true, loteId: true, pilotoId: true, clienteId: true, aeronave: { select: { radioGiroMetros: true } } }
     });
 
     if (!orden || !puedeVerOrden(req, orden)) {
@@ -661,6 +684,12 @@ const getPlanByOrdenId = async (req, res) => {
       motivoDesactualizado = "MODELO_ANTERIOR";
     }
 
+    // El radio de giro se edita en la aeronave: si cambió, la ruta quedó calculada con el viejo
+    if (!desactualizado && orden.aeronave && radioDeAeronave(orden.aeronave) !== params.radioGiroMetros) {
+      desactualizado = true;
+      motivoDesactualizado = "RADIO_AERONAVE";
+    }
+
     return res.json({
       id: plan.id,
       ordenId: plan.ordenId,
@@ -670,6 +699,7 @@ const getPlanByOrdenId = async (req, res) => {
       patronSolicitado: params.patronSolicitado ?? null,
       radioGiroMetros: params.radioGiroMetros ?? null,
       comparacionPatrones: params.comparacionPatrones ?? null,
+      recomendacion: params.recomendacion ?? null,
       cantidadPasadas: plan.cantidadPasadas,
       cantidadViajes: plan.cantidadViajes,
       superficieHa: plan.superficieHa,
@@ -703,14 +733,18 @@ const getPlanByOrdenId = async (req, res) => {
 const RADIO_GIRO_MINIMO = 30;
 const RADIO_GIRO_MAXIMO = 1000;
 
+// El radio de giro es un dato fijo de la aeronave (no se carga en cada orden).
+// La orden guarda una copia del radio con el que se calculó su ruta.
+const radioDeAeronave = (aeronave) => aeronave?.radioGiroMetros ?? RADIO_GIRO_POR_DEFECTO;
+
 /**
- * Radio de giro y patrón con los que se calcula la ruta. Lo que no viene en el
- * pedido se toma de `porDefecto` (los valores actuales de la orden, o los de la
- * aeronave al crearla). Devuelve { radio, patron } o { error }.
+ * Radio de giro y patrón con los que se calcula la ruta. El radio siempre es el de
+ * la aeronave (`porDefecto.radio`); el patrón, si no viene en el pedido, se toma de
+ * `porDefecto`. Devuelve { radio, patron } o { error }.
  */
-const parsearParametrosRuta = ({ radioGiroMetros, patron }, porDefecto) => {
+const parsearParametrosRuta = ({ patron }, porDefecto) => {
   const vacio = (valor) => valor === undefined || valor === null || valor === "";
-  const radio = vacio(radioGiroMetros) ? porDefecto.radio : Number(radioGiroMetros);
+  const radio = Number(porDefecto.radio);
 
   if (!Number.isFinite(radio) || radio < RADIO_GIRO_MINIMO || radio > RADIO_GIRO_MAXIMO) {
     return { error: `El radio de giro debe estar entre ${RADIO_GIRO_MINIMO} y ${RADIO_GIRO_MAXIMO} metros` };
@@ -748,6 +782,8 @@ const calcularPlan = ({ lote, ancho, lHa, cap, radio, patron }) => {
     radioGiroMetros: radio,
     patronSolicitado: patron,
     comparacionPatrones: resultadoPlan.comparacionPatrones,
+    // Patrón recomendado según la forma del lote, con el motivo (lo ve el piloto)
+    recomendacion: resultadoPlan.recomendacion,
     // Metadatos compactos referenciados al recorrido PostGIS de cada viaje.
     segmentosPorViaje: Object.fromEntries(resultadoPlan.viajes.map((v) => [v.numero, v.segmentos])),
     pistaPrincipalId: lote.pistaPrincipal.id,
@@ -791,6 +827,10 @@ const guardarPlan = async (tx, ordenId, { resultadoPlan, parametros }) => {
   // Los viajes (con geometrías PostGIS) van en una sola sentencia
   await insertarViajes(tx, planId, resultadoPlan.viajes);
 
+  // Orden del cargador: reparto de los productos entre las cargas del plan nuevo.
+  // Va acá porque crear, editar y regenerar guardan el plan siempre por esta función.
+  await recalcularCargas(tx, ordenId);
+
   return { planId, version };
 };
 
@@ -808,7 +848,6 @@ const updateOrden = async (req, res) => {
       aeronaveId,
       pilotoId,
       clienteId,
-      radioGiroMetros,
       patron,
       observaciones,
       fechaPrevista,
@@ -831,9 +870,9 @@ const updateOrden = async (req, res) => {
       });
     }
 
-    const nuevoPilotoId = pilotoId === undefined ? ordenActual.pilotoId : pilotoId;
-    if (!await pilotoValido(nuevoPilotoId, ordenActual.empresaId)) {
-      return res.status(400).json({ message: "Selecciona un piloto de la empresa" });
+    const nuevoPilotoId = pilotoId === undefined ? ordenActual.pilotoId : normalizarPilotoOpcional(pilotoId);
+    if (nuevoPilotoId !== null && !await pilotoValido(nuevoPilotoId, ordenActual.empresaId)) {
+      return res.status(400).json({ message: "El piloto elegido no es un piloto de la empresa" });
     }
     const nuevoClienteId = clienteId === undefined ? ordenActual.clienteId : clienteId;
     if (!await clienteValido(nuevoClienteId, ordenActual.empresaId)) {
@@ -866,18 +905,11 @@ const updateOrden = async (req, res) => {
       return res.status(400).json({ message: "La capacidad útil debe ser entre 1 y 20.000 L" });
     }
 
-    const parametrosRuta = parsearParametrosRuta(
-      { radioGiroMetros, patron },
-      { radio: ordenActual.radioGiroMetros, patron: ordenActual.patron }
-    );
-    if (parametrosRuta.error) {
-      return res.status(400).json({ message: parametrosRuta.error });
-    }
-
+    let radioAeronave;
     if (aeronaveId && aeronaveId !== ordenActual.aeronaveId) {
       const aeronave = await prisma.aeronave.findUnique({
         where: { id: aeronaveId },
-        select: { id: true, estado: true, empresaId: true }
+        select: { id: true, estado: true, empresaId: true, radioGiroMetros: true }
       });
       if (!aeronave || aeronave.empresaId !== ordenActual.empresaId) {
         return res.status(400).json({ message: "La aeronave especificada no existe o no pertenece a la empresa" });
@@ -886,6 +918,22 @@ const updateOrden = async (req, res) => {
         return res.status(400).json({ message: "La aeronave seleccionada no está activa" });
       }
       nuevaAeronaveId = aeronave.id;
+      radioAeronave = radioDeAeronave(aeronave);
+    } else {
+      const aeronaveActual = await prisma.aeronave.findUnique({
+        where: { id: ordenActual.aeronaveId },
+        select: { radioGiroMetros: true }
+      });
+      radioAeronave = radioDeAeronave(aeronaveActual);
+    }
+
+    // El radio sale siempre de la aeronave: si se editó en Aeronaves, la ruta lo toma
+    const parametrosRuta = parsearParametrosRuta(
+      { patron },
+      { radio: radioAeronave, patron: ordenActual.patron }
+    );
+    if (parametrosRuta.error) {
+      return res.status(400).json({ message: parametrosRuta.error });
     }
 
     // Validar la lista de productos si fue enviada
@@ -910,7 +958,12 @@ const updateOrden = async (req, res) => {
           return res.status(400).json({ message: validacionDosis.error });
         }
 
-        productosValidados.push({ productoId: prod.id, dosisPorHectarea: validacionDosis.dosis });
+        const validacionTotal = parsearTotalCliente(item.cantidadTotalCliente, prod.nombre);
+        if (validacionTotal.error) {
+          return res.status(400).json({ message: validacionTotal.error });
+        }
+
+        productosValidados.push({ productoId: prod.id, dosisPorHectarea: validacionDosis.dosis, cantidadTotalCliente: validacionTotal.total });
       }
     }
 
@@ -966,7 +1019,8 @@ const updateOrden = async (req, res) => {
             data: {
               ordenId: id,
               productoId: item.productoId,
-              dosisPorHectarea: item.dosisPorHectarea
+              dosisPorHectarea: item.dosisPorHectarea,
+              cantidadTotalCliente: item.cantidadTotalCliente
             }
           });
         }
@@ -1022,6 +1076,12 @@ const regenerarPlan = async (req, res) => {
       return res.status(datosLote.status).json({ message: datosLote.error });
     }
 
+    const aeronave = await prisma.aeronave.findUnique({
+      where: { id: orden.aeronaveId },
+      select: { radioGiroMetros: true }
+    });
+    const radio = radioDeAeronave(aeronave);
+
     let calculo;
     try {
       calculo = calcularPlan({
@@ -1029,7 +1089,7 @@ const regenerarPlan = async (req, res) => {
         ancho: orden.anchoAplicacionMetros,
         lHa: orden.litrosPorHectarea,
         cap: orden.capacidadUtilLitros,
-        radio: orden.radioGiroMetros,
+        radio,
         patron: orden.patron
       });
     } catch (errorPlan) {
@@ -1039,7 +1099,11 @@ const regenerarPlan = async (req, res) => {
       throw errorPlan;
     }
 
-    const { planId } = await prisma.$transaction((tx) => guardarPlan(tx, orden.id, calculo), OPCIONES_TRANSACCION);
+    const { planId } = await prisma.$transaction(async (tx) => {
+      // La orden guarda la copia del radio con el que se calculó la ruta nueva
+      await tx.ordenTrabajo.update({ where: { id: orden.id }, data: { radioGiroMetros: radio } });
+      return guardarPlan(tx, orden.id, calculo);
+    }, OPCIONES_TRANSACCION);
 
     const planActualizado = await prisma.planVuelo.findUnique({
       where: { id: planId }
