@@ -5,6 +5,9 @@ const { armarVistaCargas, recalcularCargas } = require("../services/reparto/carg
 const ESTADOS_CERRADOS = ["FINALIZADA", "CANCELADA"];
 const OPCIONES_TRANSACCION = { maxWait: 15000, timeout: 60000 };
 
+// Se lanza dentro de la transacción para deshacerla cuando una celda pedida no existe
+class CargaInexistenteError extends Error {}
+
 // Misma regla de visibilidad que el resto de la orden
 const puedeVerOrden = (req, orden) => isAdmin(req) || (
   orden.empresaId === req.auth.empresaId &&
@@ -101,31 +104,42 @@ const actualizarCargas = async (req, res) => {
     const orden = await ordenEditable(req, res);
     if (!orden) return undefined;
 
-    const error = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
+      const leerCeldas = () => tx.cargaProducto.findMany({
+        where: { ordenId: orden.id },
+        select: { id: true, numeroViaje: true, productoId: true, cantidadAutomatica: true }
+      });
+
       // Órdenes anteriores a esta función: se crean primero las cargas automáticas
-      const existentes = await tx.cargaProducto.count({ where: { ordenId: orden.id } });
-      if (existentes === 0) await recalcularCargas(tx, orden.id);
+      let celdas = await leerCeldas();
+      if (celdas.length === 0) {
+        await recalcularCargas(tx, orden.id);
+        celdas = await leerCeldas();
+      }
+
+      // Se valida todo antes de escribir. Si una celda no existe se lanza un error para que
+      // la transacción se deshaga y no quede guardada solo una parte de las correcciones.
+      const porCelda = new Map(celdas.map((celda) => [`${celda.numeroViaje}|${celda.productoId}`, celda]));
+      const faltante = cargas.find((carga) => !porCelda.has(`${carga.numeroViaje}|${carga.productoId}`));
+      if (faltante) {
+        throw new CargaInexistenteError(`No existe la carga del viaje ${faltante.numeroViaje} para ese producto`);
+      }
 
       for (const carga of cargas) {
-        const actual = await tx.cargaProducto.findUnique({
-          where: { ordenId_numeroViaje_productoId: { ordenId: orden.id, numeroViaje: carga.numeroViaje, productoId: carga.productoId } },
-          select: { id: true, cantidadAutomatica: true }
-        });
-        if (!actual) return `No existe la carga del viaje ${carga.numeroViaje} para ese producto`;
-
+        const actual = porCelda.get(`${carga.numeroViaje}|${carga.productoId}`);
         const cantidad = Math.round(Number(carga.cantidad) * 100) / 100;
         await tx.cargaProducto.update({
           where: { id: actual.id },
           data: { cantidad, manual: Math.abs(cantidad - actual.cantidadAutomatica) >= 0.005 }
         });
       }
-      return null;
     }, OPCIONES_TRANSACCION);
-
-    if (error) return res.status(400).json({ message: error });
 
     return responderVista(res, orden);
   } catch (error) {
+    if (error instanceof CargaInexistenteError) {
+      return res.status(400).json({ message: error.message });
+    }
     console.error("Error al actualizar las cargas:", error);
     return res.status(500).json({ message: "No se pudieron guardar las cargas" });
   }
