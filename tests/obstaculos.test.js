@@ -1,7 +1,7 @@
 // Validación de la geometría de los obstáculos (sin base de datos).
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { validarGeometria } = require("../controllers/ObstaculoController");
+const { validarGeometria } = require("../utils/geometriaObstaculos");
 
 test("una estructura se marca como punto", () => {
   assert.equal(validarGeometria("MOLINO", { type: "Point", coordinates: [-62.08, -31.42] }), null);

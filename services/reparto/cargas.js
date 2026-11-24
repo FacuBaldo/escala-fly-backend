@@ -122,7 +122,7 @@ const armarVistaCargas = async (db, ordenId) => {
       requerido: datos?.requerido ?? null,
       asignado: Math.round(asignado * 100) / 100,
       // Lo asignado a las cargas contra lo que trajo el cliente: > 0 sobra, < 0 falta
-      diferenciaCliente: p.cantidadTotalCliente ? Math.round((p.cantidadTotalCliente - asignado) * 100) / 100 : null
+      diferenciaCliente: datos?.totalCliente != null ? Math.round((datos.totalCliente - asignado) * 100) / 100 : null
     };
   });
 

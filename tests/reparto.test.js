@@ -57,6 +57,14 @@ test("sin dosis reparte el total del cliente por hectareas", () => {
   assert.equal(resumen[0].dosisEfectiva, 0.2);
 });
 
+test("si el cliente informo cero se muestra el faltante, no un total desconocido", () => {
+  const { resumen } = repartirProductos([{ numero: 1, superficieHa: 100 }], [
+    { productoId: "a", dosisPorHectarea: 0.5, cantidadTotalCliente: 0 }
+  ]);
+  assert.equal(resumen[0].totalCliente, 0);
+  assert.equal(resumen[0].diferencia, -50);
+});
+
 test("un producto sin dosis ni total no genera cargas", () => {
   const { cargas, resumen } = repartirProductos([{ numero: 1, superficieHa: 10, caldoLitros: 100 }], [{ productoId: "c" }]);
   assert.equal(cargas.length, 0);

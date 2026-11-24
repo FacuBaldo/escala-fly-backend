@@ -67,7 +67,9 @@ const repartirProductos = (viajes, productos) => {
 
   for (const producto of productos) {
     const dosis = esPositivo(producto.dosisPorHectarea) ? producto.dosisPorHectarea : null;
-    const totalCliente = esPositivo(producto.cantidadTotalCliente) ? producto.cantidadTotalCliente : null;
+    const totalCliente = producto.cantidadTotalCliente === 0 || esPositivo(producto.cantidadTotalCliente)
+      ? producto.cantidadTotalCliente
+      : null;
 
     let criterio = "SIN_DATOS";
     let totalARepartir = null;
